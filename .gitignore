@@ -6,3 +6,7 @@ log/
 __pycache__/
 
 .DS_Store
+
+# Local YASMIN demo packages
+src/yasmin_action_fsm/
+src/yasmin_action_interfaces/

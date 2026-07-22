@@ -1,0 +1,12 @@
+float64 target_x
+float64 target_y
+float64 linear_speed
+float64 angular_speed
+float64 timeout_sec
+---
+bool success
+string message
+float64 final_distance
+---
+string state
+float64 distance_remaining

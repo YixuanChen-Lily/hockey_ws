@@ -1,0 +1,10 @@
+int32 rotations
+float64 angular_speed
+float64 timeout_sec
+---
+bool success
+string message
+float64 rotation_completed
+---
+string state
+float64 rotation_remaining
