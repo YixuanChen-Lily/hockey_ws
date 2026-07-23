@@ -15,33 +15,45 @@ from hockey_interfaces.action import NavigateToPoint, Spin
 
 
 class MissionManager(Node):
-    """Runs step1 navigation, then transitions to step2 spinning."""
+    """Runs navigation, safe navigation, then transitions to spinning."""
 
     def __init__(self) -> None:
         super().__init__("mission_manager")
 
         self.declare_parameter("navigation_action", "navigate_to_point")
+        self.declare_parameter("safe_navigation_action", "safe_navigate_to_point")
         self.declare_parameter("spin_action", "spin")
         self.declare_parameter("target_x", 1.0)
         self.declare_parameter("target_y", 0.0)
+        self.declare_parameter("safe_target_x", 1.0)
+        self.declare_parameter("safe_target_y", 0.0)
         self.declare_parameter("rotations", 1)
         self.declare_parameter("linear_speed", 0.4)
         self.declare_parameter("angular_speed", 0.8)
         self.declare_parameter("navigation_timeout_sec", 30.0)
+        self.declare_parameter("safe_navigation_timeout_sec", 30.0)
         self.declare_parameter("spin_timeout_sec", 15.0)
         self.declare_parameter("action_wait_timeout_sec", 5.0)
 
         self.navigation_action = str(
             self.get_parameter("navigation_action").value
         )
+        self.safe_navigation_action = str(
+            self.get_parameter("safe_navigation_action").value
+        )
         self.spin_action = str(self.get_parameter("spin_action").value)
         self.target_x = float(self.get_parameter("target_x").value)
         self.target_y = float(self.get_parameter("target_y").value)
+        self.safe_target_x = float(self.get_parameter("safe_target_x").value)
+        self.safe_target_y = float(self.get_parameter("safe_target_y").value)
         self.rotations = int(self.get_parameter("rotations").value)
         self.linear_speed = float(self.get_parameter("linear_speed").value)
         self.angular_speed = float(self.get_parameter("angular_speed").value)
         self.navigation_timeout_sec = float(
             self.get_parameter("navigation_timeout_sec").value
+        )
+        self.safe_navigation_timeout_sec = float(
+            self.get_parameter("safe_navigation_timeout_sec").value
         )
         self.spin_timeout_sec = float(self.get_parameter("spin_timeout_sec").value)
         self.action_wait_timeout_sec = float(
@@ -70,6 +82,12 @@ class MissionManager(Node):
             self.navigation_action,
             callback_group=self._callback_group,
         )
+        self._safe_navigation_client = ActionClient(
+            self,
+            NavigateToPoint,
+            self.safe_navigation_action,
+            callback_group=self._callback_group,
+        )
         self._spin_client = ActionClient(
             self,
             Spin,
@@ -80,9 +98,12 @@ class MissionManager(Node):
         self._publish_status("IDLE")
         self.get_logger().info(
             "Mission manager ready. Call /mission/start.\n"
-            f"  step1 action = {self.navigation_action}\n"
+            # f"  step1 action = {self.navigation_action}\n"
+            f"  step1 action = {self.safe_navigation_action}\n"
             f"  step2 action = {self.spin_action}\n"
-            f"  target       = ({self.target_x:.2f}, {self.target_y:.2f})\n"
+            # f"  target       = ({self.target_x:.2f}, {self.target_y:.2f})\n"
+            f"  safe target  = "
+            f"({self.safe_target_x:.2f}, {self.safe_target_y:.2f})\n"
             f"  rotations    = {self.rotations}"
         )
 
@@ -110,17 +131,33 @@ class MissionManager(Node):
 
     def _run_mission(self) -> None:
         try:
-            self._publish_status("STEP1_NAVIGATE")
-            navigation_success, navigation_message = self._run_navigation_step()
-            if not navigation_success:
+            # self._publish_status("STEP1_NAVIGATE")
+            # navigation_success, navigation_message = self._run_navigation_step()
+            # if not navigation_success:
+            #     self._publish_status("MISSION_FAILED")
+            #     self.get_logger().error(
+            #         f"Step1 navigation failed: {navigation_message}"
+            #     )
+            #     return
+
+            # self.get_logger().info(
+            #     "Step1 navigation succeeded. Transitioning to step2 safe "
+            #     "navigation."
+            # )
+
+            self._publish_status("STEP1_SAFE_NAVIGATE")
+            safe_navigation_success, safe_navigation_message = (
+                self._run_safe_navigation_step()
+            )
+            if not safe_navigation_success:
                 self._publish_status("MISSION_FAILED")
                 self.get_logger().error(
-                    f"Step1 navigation failed: {navigation_message}"
+                    f"Step1 safe navigation failed: {safe_navigation_message}"
                 )
                 return
 
             self.get_logger().info(
-                "Step1 navigation succeeded. Transitioning to step2 spin."
+                "Step1 safe navigation succeeded. Transitioning to step3 spin."
             )
 
             self._publish_status("STEP2_SPIN")
@@ -158,6 +195,28 @@ class MissionManager(Node):
             self._navigation_client,
             goal,
             self._handle_navigation_feedback,
+        )
+
+    def _run_safe_navigation_step(self) -> Tuple[bool, str]:
+        if not self._safe_navigation_client.wait_for_server(
+            timeout_sec=self.action_wait_timeout_sec
+        ):
+            return (
+                False,
+                f"Action server unavailable: {self.safe_navigation_action}",
+            )
+
+        goal = NavigateToPoint.Goal()
+        goal.target_x = self.safe_target_x
+        goal.target_y = self.safe_target_y
+        goal.linear_speed = self.linear_speed
+        goal.angular_speed = self.angular_speed
+        goal.timeout_sec = self.safe_navigation_timeout_sec
+
+        return self._send_goal_and_wait(
+            self._safe_navigation_client,
+            goal,
+            self._handle_safe_navigation_feedback,
         )
 
     def _run_spin_step(self) -> Tuple[bool, str]:
@@ -216,6 +275,14 @@ class MissionManager(Node):
         return bool(result_holder["success"]), str(result_holder["message"])
 
     def _handle_navigation_feedback(self, feedback_message) -> None:
+        feedback = feedback_message.feedback
+        self.get_logger().info(
+            "Step1 feedback: "
+            f"{feedback.state}, "
+            f"distance={feedback.distance_remaining:.2f}"
+        )
+
+    def _handle_safe_navigation_feedback(self, feedback_message) -> None:
         feedback = feedback_message.feedback
         self.get_logger().info(
             "Step1 feedback: "

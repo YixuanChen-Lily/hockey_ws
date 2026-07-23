@@ -3,14 +3,16 @@
 ROS 2 workspace for running a simple hockey robot mission:
 
 1. Navigate to a target point.
-2. Spin in place.
-3. Report mission status.
+2. Run safe navigation to the final target.
+3. Spin in place.
+4. Report mission status.
 
-The main launch file starts three nodes:
+The main launch file starts four nodes:
 
 - `navigation_server`: action server for driving to a goal.
+- `safe_navigation_server`: action server for conservative final navigation.
 - `spin_server`: action server for spinning in place.
-- `mission_manager`: starts step 1, transitions to step 2, and publishes status.
+- `mission_manager`: runs the mission steps and publishes status.
 
 ## Prerequisites
 
@@ -63,6 +65,8 @@ ros2 launch hockey_controller mission.launch.py \
   robot_id:=1 \
   target_x:=1.5 \
   target_y:=0.5 \
+  safe_target_x:=1.5 \
+  safe_target_y:=0.5 \
   rotations:=2 \
   linear_speed:=0.4 \
   angular_speed:=0.8
@@ -89,7 +93,8 @@ Expected status sequence:
 
 ```text
 STEP1_NAVIGATE
-STEP2_SPIN
+STEP2_SAFE_NAVIGATE
+STEP3_SPIN
 MISSION_DONE
 ```
 
@@ -135,3 +140,10 @@ If using a different robot, pass the matching ID:
 ```bash
 ros2 launch hockey_controller mission.launch.py robot_id:=2
 ```
+
+
+
+
+ros2 action send_goal /safe_navigate_to_point hockey_interfaces/action/NavigateToPoint \
+"{target_x: 0.0, target_y: 0.0, linear_speed: 0.3, angular_speed: 0.8, timeout_sec: 20.0}" \
+--feedback

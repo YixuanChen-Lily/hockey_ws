@@ -39,6 +39,10 @@ setup(
                 "hockey_controller.navigation_server:main"
             ),
             (
+                "safe_navigation_server = "
+                "hockey_controller.safe_navigation_server:main"
+            ),
+            (
                 "spin_server = "
                 "hockey_controller.spin_server:main"
             ),
