@@ -1,17 +1,31 @@
 #!/usr/bin/env python3
 
+import math
 from threading import Event, Lock, Thread
 from typing import Optional, Tuple
 
 import rclpy
+from geometry_msgs.msg import Point, PoseStamped, Twist
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from std_msgs.msg import ColorRGBA
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+from visualization_msgs.msg import Marker, MarkerArray
 
 from hockey_interfaces.action import NavigateToPoint, Spin
+from hockey_controller.cushion_parking_planner import CushionGeometry
+from hockey_controller.cushion_parking_planner import ParkingPlannerConfig
+from hockey_controller.cushion_parking_planner import cushion_axes
+from hockey_controller.cushion_parking_planner import plan_parking_route
+from hockey_controller.navigation_server import clamp
+from hockey_controller.navigation_server import wrap_to_pi
+from hockey_controller.navigation_server import yaw_from_quaternion
 
 
 class MissionManager(Node):
@@ -23,10 +37,36 @@ class MissionManager(Node):
         self.declare_parameter("navigation_action", "navigate_to_point")
         self.declare_parameter("safe_navigation_action", "safe_navigate_to_point")
         self.declare_parameter("spin_action", "spin")
+        self.declare_parameter("robot_id", 1)
+        self.declare_parameter("pose_topic", "")
+        self.declare_parameter("cushion_pose_topic", "")
+        self.declare_parameter("parking_enabled", True)
         self.declare_parameter("target_x", 1.0)
         self.declare_parameter("target_y", 0.0)
         self.declare_parameter("safe_target_x", 1.0)
         self.declare_parameter("safe_target_y", 0.0)
+        self.declare_parameter("cushion_length", 1.0)
+        self.declare_parameter("cushion_width", 0.12)
+        self.declare_parameter("parking_front_axis", "y")
+        self.declare_parameter("front_normal_sign", -1.0)
+        self.declare_parameter("front_side_threshold", 0.0)
+        self.declare_parameter("side_clearance", 0.35)
+        self.declare_parameter("front_clearance", 0.35)
+        self.declare_parameter("desired_normal_distance", 0.35)
+        self.declare_parameter("tangential_offset", 0.0)
+        self.declare_parameter("pre_park_backoff", 0.40)
+        self.declare_parameter("parking_robot_safety_radius", 0.20)
+        self.declare_parameter("stick_safety_extension", 0.0)
+        self.declare_parameter("parking_safety_margin", 0.10)
+        self.declare_parameter("cushion_circle_spacing", 0.20)
+        self.declare_parameter("parking_lookahead_distance", 0.25)
+        self.declare_parameter("final_approach_speed", 0.12)
+        self.declare_parameter("final_approach_point_gain", 0.35)
+        self.declare_parameter("align_gain", 2.0)
+        self.declare_parameter("align_timeout_sec", 8.0)
+        self.declare_parameter("final_yaw_tolerance", 0.08)
+        self.declare_parameter("pose_timeout_sec", 1.0)
+        self.declare_parameter("visualization_frame", "map")
         self.declare_parameter("rotations", 1)
         self.declare_parameter("linear_speed", 0.4)
         self.declare_parameter("angular_speed", 0.8)
@@ -42,10 +82,26 @@ class MissionManager(Node):
             self.get_parameter("safe_navigation_action").value
         )
         self.spin_action = str(self.get_parameter("spin_action").value)
+        self.robot_id = int(self.get_parameter("robot_id").value)
+        pose_topic = str(self.get_parameter("pose_topic").value)
+        cushion_pose_topic = str(self.get_parameter("cushion_pose_topic").value)
+        self.pose_topic = (
+            pose_topic
+            if pose_topic
+            else f"/vrpn_mocap/dji_robot_{self.robot_id}/pose"
+        )
+        self.cushion_pose_topic = (
+            cushion_pose_topic
+            if cushion_pose_topic
+            else "/vrpn_mocap/hockey_sticks_1/pose"
+        )
+        self.cmd_vel_topic = f"/robot{self.robot_id}/cmd_vel"
+        self.parking_enabled = bool(self.get_parameter("parking_enabled").value)
         self.target_x = float(self.get_parameter("target_x").value)
         self.target_y = float(self.get_parameter("target_y").value)
         self.safe_target_x = float(self.get_parameter("safe_target_x").value)
         self.safe_target_y = float(self.get_parameter("safe_target_y").value)
+        self._reload_parking_parameters()
         self.rotations = int(self.get_parameter("rotations").value)
         self.linear_speed = float(self.get_parameter("linear_speed").value)
         self.angular_speed = float(self.get_parameter("angular_speed").value)
@@ -62,7 +118,15 @@ class MissionManager(Node):
 
         self._lock = Lock()
         self._running = False
+        self._stop_requested = False
         self._worker: Optional[Thread] = None
+        self._active_goal_handle = None
+        self._pose_lock = Lock()
+        self._latest_pose: Optional[Tuple[float, float, float]] = None
+        self._latest_pose_time = None
+        self._cushion_pose_lock = Lock()
+        self._latest_cushion_pose: Optional[Tuple[float, float, float]] = None
+        self._latest_cushion_pose_time = None
         self._callback_group = ReentrantCallbackGroup()
 
         self._status_publisher = self.create_publisher(
@@ -70,10 +134,40 @@ class MissionManager(Node):
             "/mission/status",
             10,
         )
+        self._cmd_vel_publisher = self.create_publisher(
+            Twist,
+            self.cmd_vel_topic,
+            10,
+        )
+        self._parking_marker_publisher = self.create_publisher(
+            MarkerArray,
+            "/mission/parking_markers",
+            10,
+        )
+        self._pose_subscription = self.create_subscription(
+            PoseStamped,
+            self.pose_topic,
+            self._pose_callback,
+            qos_profile_sensor_data,
+            callback_group=self._callback_group,
+        )
+        self._cushion_pose_subscription = self.create_subscription(
+            PoseStamped,
+            self.cushion_pose_topic,
+            self._cushion_pose_callback,
+            qos_profile_sensor_data,
+            callback_group=self._callback_group,
+        )
         self._start_service = self.create_service(
             Trigger,
             "/mission/start",
             self._handle_start,
+            callback_group=self._callback_group,
+        )
+        self._stop_service = self.create_service(
+            Trigger,
+            "/mission/stop",
+            self._handle_stop,
             callback_group=self._callback_group,
         )
         self._navigation_client = ActionClient(
@@ -94,16 +188,20 @@ class MissionManager(Node):
             self.spin_action,
             callback_group=self._callback_group,
         )
+        self._safe_nav_parameter_client = self.create_client(
+            SetParameters,
+            "/safe_navigation_server/set_parameters",
+            callback_group=self._callback_group,
+        )
 
         self._publish_status("IDLE")
         self.get_logger().info(
             "Mission manager ready. Call /mission/start.\n"
-            # f"  step1 action = {self.navigation_action}\n"
             f"  step1 action = {self.safe_navigation_action}\n"
             f"  step2 action = {self.spin_action}\n"
-            # f"  target       = ({self.target_x:.2f}, {self.target_y:.2f})\n"
             f"  safe target  = "
             f"({self.safe_target_x:.2f}, {self.safe_target_y:.2f})\n"
+            f"  parking     = {self.parking_enabled}\n"
             f"  rotations    = {self.rotations}"
         )
 
@@ -120,6 +218,8 @@ class MissionManager(Node):
                 response.message = "Mission is already running"
                 return response
 
+            self._reload_parameters()
+            self._stop_requested = False
             self._running = True
 
         self._worker = Thread(target=self._run_mission, daemon=True)
@@ -129,26 +229,131 @@ class MissionManager(Node):
         response.message = "Mission started"
         return response
 
+    def _handle_stop(
+        self,
+        request: Trigger.Request,
+        response: Trigger.Response,
+    ) -> Trigger.Response:
+        del request
+
+        with self._lock:
+            if not self._running:
+                response.success = False
+                response.message = "Mission is not running"
+                return response
+
+            self._stop_requested = True
+            active_goal_handle = self._active_goal_handle
+
+        if active_goal_handle is not None:
+            active_goal_handle.cancel_goal_async()
+
+        self._publish_status("MISSION_STOPPING")
+        response.success = True
+        response.message = "Mission stop requested"
+        return response
+
+    def _reload_parameters(self) -> None:
+        self.navigation_action = str(
+            self.get_parameter("navigation_action").value
+        )
+        self.safe_navigation_action = str(
+            self.get_parameter("safe_navigation_action").value
+        )
+        self.spin_action = str(self.get_parameter("spin_action").value)
+        self.parking_enabled = bool(self.get_parameter("parking_enabled").value)
+        self.target_x = float(self.get_parameter("target_x").value)
+        self.target_y = float(self.get_parameter("target_y").value)
+        self.safe_target_x = float(self.get_parameter("safe_target_x").value)
+        self.safe_target_y = float(self.get_parameter("safe_target_y").value)
+        self._reload_parking_parameters()
+        self.rotations = int(self.get_parameter("rotations").value)
+        self.linear_speed = float(self.get_parameter("linear_speed").value)
+        self.angular_speed = float(self.get_parameter("angular_speed").value)
+        self.navigation_timeout_sec = float(
+            self.get_parameter("navigation_timeout_sec").value
+        )
+        self.safe_navigation_timeout_sec = float(
+            self.get_parameter("safe_navigation_timeout_sec").value
+        )
+        self.spin_timeout_sec = float(self.get_parameter("spin_timeout_sec").value)
+        self.action_wait_timeout_sec = float(
+            self.get_parameter("action_wait_timeout_sec").value
+        )
+
+    def _reload_parking_parameters(self) -> None:
+        self.cushion_length = float(self.get_parameter("cushion_length").value)
+        self.cushion_width = float(self.get_parameter("cushion_width").value)
+        self.parking_front_axis = str(
+            self.get_parameter("parking_front_axis").value
+        )
+        self.front_normal_sign = float(
+            self.get_parameter("front_normal_sign").value
+        )
+        self.front_side_threshold = float(
+            self.get_parameter("front_side_threshold").value
+        )
+        self.side_clearance = float(self.get_parameter("side_clearance").value)
+        self.front_clearance = float(self.get_parameter("front_clearance").value)
+        self.desired_normal_distance = float(
+            self.get_parameter("desired_normal_distance").value
+        )
+        self.tangential_offset = float(
+            self.get_parameter("tangential_offset").value
+        )
+        self.pre_park_backoff = float(
+            self.get_parameter("pre_park_backoff").value
+        )
+        self.parking_robot_safety_radius = float(
+            self.get_parameter("parking_robot_safety_radius").value
+        )
+        self.stick_safety_extension = float(
+            self.get_parameter("stick_safety_extension").value
+        )
+        self.parking_safety_margin = float(
+            self.get_parameter("parking_safety_margin").value
+        )
+        self.cushion_circle_spacing = float(
+            self.get_parameter("cushion_circle_spacing").value
+        )
+        self.parking_lookahead_distance = float(
+            self.get_parameter("parking_lookahead_distance").value
+        )
+        self.final_approach_speed = float(
+            self.get_parameter("final_approach_speed").value
+        )
+        self.final_approach_point_gain = float(
+            self.get_parameter("final_approach_point_gain").value
+        )
+        self.align_gain = float(self.get_parameter("align_gain").value)
+        self.align_timeout_sec = float(
+            self.get_parameter("align_timeout_sec").value
+        )
+        self.final_yaw_tolerance = float(
+            self.get_parameter("final_yaw_tolerance").value
+        )
+        self.pose_timeout_sec = float(self.get_parameter("pose_timeout_sec").value)
+        self.visualization_frame = str(
+            self.get_parameter("visualization_frame").value
+        )
+
     def _run_mission(self) -> None:
         try:
-            # self._publish_status("STEP1_NAVIGATE")
-            # navigation_success, navigation_message = self._run_navigation_step()
-            # if not navigation_success:
-            #     self._publish_status("MISSION_FAILED")
-            #     self.get_logger().error(
-            #         f"Step1 navigation failed: {navigation_message}"
-            #     )
-            #     return
-
-            # self.get_logger().info(
-            #     "Step1 navigation succeeded. Transitioning to step2 safe "
-            #     "navigation."
-            # )
+            if self.parking_enabled:
+                self._run_parking_mission()
+                return
 
             self._publish_status("STEP1_SAFE_NAVIGATE")
+            if self._is_stop_requested():
+                self._publish_status("MISSION_STOPPED")
+                return
+
             safe_navigation_success, safe_navigation_message = (
                 self._run_safe_navigation_step()
             )
+            if self._is_stop_requested():
+                self._publish_status("MISSION_STOPPED")
+                return
             if not safe_navigation_success:
                 self._publish_status("MISSION_FAILED")
                 self.get_logger().error(
@@ -157,11 +362,18 @@ class MissionManager(Node):
                 return
 
             self.get_logger().info(
-                "Step1 safe navigation succeeded. Transitioning to step3 spin."
+                "Step1 safe navigation succeeded. Transitioning to step2 spin."
             )
 
             self._publish_status("STEP2_SPIN")
+            if self._is_stop_requested():
+                self._publish_status("MISSION_STOPPED")
+                return
+
             spin_success, spin_message = self._run_spin_step()
+            if self._is_stop_requested():
+                self._publish_status("MISSION_STOPPED")
+                return
             if not spin_success:
                 self._publish_status("MISSION_FAILED")
                 self.get_logger().error(f"Step2 spin failed: {spin_message}")
@@ -177,6 +389,511 @@ class MissionManager(Node):
         finally:
             with self._lock:
                 self._running = False
+                self._stop_requested = False
+                self._active_goal_handle = None
+
+    def _is_stop_requested(self) -> bool:
+        with self._lock:
+            return self._stop_requested
+
+    def _run_parking_mission(self) -> None:
+        self._publish_status("CHECK_CUSHION_SIDE")
+        robot_pose = self._get_fresh_pose()
+        cushion_pose = self._get_fresh_cushion_pose()
+        if robot_pose is None or cushion_pose is None:
+            self._publish_status("MISSION_FAILED")
+            self.get_logger().error("Parking failed: stale robot or cushion pose")
+            return
+
+        geometry = CushionGeometry(
+            center_x=cushion_pose[0],
+            center_y=cushion_pose[1],
+            length=self.cushion_length,
+            width=self.cushion_width,
+            yaw=cushion_pose[2],
+            front_axis=self.parking_front_axis,
+            front_normal_sign=self.front_normal_sign,
+        )
+        config = ParkingPlannerConfig(
+            front_side_threshold=self.front_side_threshold,
+            side_clearance=self.side_clearance,
+            front_clearance=self.front_clearance,
+            desired_normal_distance=self.desired_normal_distance,
+            tangential_offset=self.tangential_offset,
+            pre_park_backoff=self.pre_park_backoff,
+            robot_safety_radius=self.parking_robot_safety_radius,
+            stick_safety_extension=self.stick_safety_extension,
+            safety_margin=self.parking_safety_margin,
+            circle_spacing=self.cushion_circle_spacing,
+        )
+        plan = plan_parking_route(
+            (robot_pose[0], robot_pose[1]),
+            geometry,
+            config,
+        )
+        self._publish_parking_markers(robot_pose, geometry, config, plan)
+        if not plan.waypoints:
+            self._publish_status("FAILED")
+            self.get_logger().error(f"Parking planning failed: {plan.message}")
+            return
+
+        if not self._configure_safe_navigation_for_parking(plan):
+            self._publish_status("FAILED")
+            return
+
+        if not plan.already_front_side:
+            self._publish_status("SELECT_BYPASS_SIDE")
+            self.get_logger().info(f"Selected {plan.bypass_side} bypass route")
+            self._publish_status("GO_TO_BYPASS_WAYPOINT")
+            success, message = self._run_safe_navigation_to_point(
+                plan.waypoints[0][0],
+                plan.waypoints[0][1],
+                self.linear_speed,
+                self.safe_navigation_timeout_sec,
+            )
+            if self._parking_step_failed(success, message):
+                return
+        else:
+            self.get_logger().info("Robot already on cushion parking side")
+
+        self._publish_status("GO_TO_PRE_PARK_POINT")
+        success, message = self._run_safe_navigation_to_point(
+            plan.pre_park_point[0],
+            plan.pre_park_point[1],
+            self.linear_speed,
+            self.safe_navigation_timeout_sec,
+        )
+        if self._parking_step_failed(success, message):
+            return
+
+        self._publish_status("ALIGN_FOR_FINAL_APPROACH")
+        if not self._align_to_yaw(plan.final_yaw):
+            self._publish_status("FAILED")
+            return
+
+        self._publish_status("FINAL_APPROACH")
+        self._set_safe_nav_parameters(
+            {
+                "point_gain": self.final_approach_point_gain,
+            }
+        )
+        final_point = self._control_point_goal_for_robot_pose(
+            plan.final_park_point,
+            plan.final_yaw,
+        )
+        success, message = self._run_safe_navigation_to_point(
+            final_point[0],
+            final_point[1],
+            self.final_approach_speed,
+            self.safe_navigation_timeout_sec,
+        )
+        if self._parking_step_failed(success, message):
+            return
+
+        if not self._align_to_yaw(plan.final_yaw):
+            self._publish_status("FAILED")
+            return
+
+        self._publish_status("DONE")
+        self.get_logger().info("Parking mission completed successfully.")
+
+    def _control_point_goal_for_robot_pose(
+        self,
+        robot_position: Tuple[float, float],
+        robot_yaw: float,
+    ) -> Tuple[float, float]:
+        return (
+            robot_position[0]
+            + self.parking_lookahead_distance * math.cos(robot_yaw),
+            robot_position[1]
+            + self.parking_lookahead_distance * math.sin(robot_yaw),
+        )
+
+    def _publish_parking_markers(
+        self,
+        robot_pose: Tuple[float, float, float],
+        geometry: CushionGeometry,
+        config: ParkingPlannerConfig,
+        plan,
+    ) -> None:
+        markers = MarkerArray()
+        delete_marker = Marker()
+        delete_marker.action = Marker.DELETEALL
+        markers.markers.append(delete_marker)
+
+        marker_id = 0
+        markers.markers.append(
+            self._cube_marker(
+                marker_id,
+                "cushion_body",
+                geometry.center_x,
+                geometry.center_y,
+                geometry.yaw,
+                geometry.length,
+                geometry.width,
+                0.04,
+                ColorRGBA(r=0.5, g=0.5, b=0.5, a=0.45),
+            )
+        )
+        marker_id += 1
+
+        for obstacle in plan.cushion_obstacles:
+            markers.markers.append(
+                self._circle_marker(
+                    marker_id,
+                    "cushion_cbf_radius",
+                    obstacle.x,
+                    obstacle.y,
+                    obstacle.radius,
+                    ColorRGBA(r=0.1, g=0.35, b=1.0, a=0.22),
+                )
+            )
+            marker_id += 1
+
+        markers.markers.append(
+            self._circle_marker(
+                marker_id,
+                "robot_safety_radius",
+                robot_pose[0],
+                robot_pose[1],
+                config.robot_safety_radius,
+                ColorRGBA(r=0.0, g=0.8, b=0.25, a=0.28),
+            )
+        )
+        marker_id += 1
+
+        t, n = cushion_axes(geometry)
+        markers.markers.append(
+            self._arrow_marker(
+                marker_id,
+                "front_normal",
+                (geometry.center_x, geometry.center_y),
+                (
+                    geometry.center_x + 0.4 * n[0],
+                    geometry.center_y + 0.4 * n[1],
+                ),
+                ColorRGBA(r=1.0, g=0.2, b=0.1, a=0.9),
+            )
+        )
+        marker_id += 1
+        markers.markers.append(
+            self._arrow_marker(
+                marker_id,
+                "cushion_local_x",
+                (geometry.center_x, geometry.center_y),
+                (
+                    geometry.center_x + 0.4 * t[0],
+                    geometry.center_y + 0.4 * t[1],
+                ),
+                ColorRGBA(r=1.0, g=0.8, b=0.0, a=0.9),
+            )
+        )
+        marker_id += 1
+
+        route_points = [(robot_pose[0], robot_pose[1])]
+        route_points.extend(plan.waypoints)
+        if len(route_points) >= 2:
+            markers.markers.append(
+                self._line_strip_marker(
+                    marker_id,
+                    "parking_route",
+                    route_points,
+                    ColorRGBA(r=1.0, g=0.0, b=1.0, a=0.9),
+                )
+            )
+            marker_id += 1
+
+        labeled_points = [
+            ("pre_park_point", plan.pre_park_point, ColorRGBA(r=1.0, g=0.65, b=0.0, a=0.95)),
+            ("final_park_point", plan.final_park_point, ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.95)),
+        ]
+        if not plan.already_front_side and plan.waypoints:
+            labeled_points.insert(
+                0,
+                (
+                    "bypass_waypoint",
+                    plan.waypoints[0],
+                    ColorRGBA(r=1.0, g=0.0, b=1.0, a=0.95),
+                ),
+            )
+        for namespace, point, color in labeled_points:
+            markers.markers.append(
+                self._sphere_marker(
+                    marker_id,
+                    namespace,
+                    point[0],
+                    point[1],
+                    0.08,
+                    color,
+                )
+            )
+            marker_id += 1
+
+        final_heading_end = (
+            plan.final_park_point[0] + 0.25 * math.cos(plan.final_yaw),
+            plan.final_park_point[1] + 0.25 * math.sin(plan.final_yaw),
+        )
+        markers.markers.append(
+            self._arrow_marker(
+                marker_id,
+                "final_yaw",
+                plan.final_park_point,
+                final_heading_end,
+                ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.9),
+            )
+        )
+
+        self._parking_marker_publisher.publish(markers)
+
+    def _base_marker(self, marker_id: int, namespace: str, marker_type: int) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = self.visualization_frame
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = namespace
+        marker.id = marker_id
+        marker.type = marker_type
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        return marker
+
+    def _circle_marker(
+        self,
+        marker_id: int,
+        namespace: str,
+        x: float,
+        y: float,
+        radius: float,
+        color: ColorRGBA,
+    ) -> Marker:
+        marker = self._base_marker(marker_id, namespace, Marker.CYLINDER)
+        marker.pose.position.x = x
+        marker.pose.position.y = y
+        marker.pose.position.z = 0.01
+        marker.scale.x = 2.0 * radius
+        marker.scale.y = 2.0 * radius
+        marker.scale.z = 0.02
+        marker.color = color
+        return marker
+
+    def _sphere_marker(
+        self,
+        marker_id: int,
+        namespace: str,
+        x: float,
+        y: float,
+        diameter: float,
+        color: ColorRGBA,
+    ) -> Marker:
+        marker = self._base_marker(marker_id, namespace, Marker.SPHERE)
+        marker.pose.position.x = x
+        marker.pose.position.y = y
+        marker.pose.position.z = 0.08
+        marker.scale.x = diameter
+        marker.scale.y = diameter
+        marker.scale.z = diameter
+        marker.color = color
+        return marker
+
+    def _cube_marker(
+        self,
+        marker_id: int,
+        namespace: str,
+        x: float,
+        y: float,
+        yaw: float,
+        length: float,
+        width: float,
+        height: float,
+        color: ColorRGBA,
+    ) -> Marker:
+        marker = self._base_marker(marker_id, namespace, Marker.CUBE)
+        marker.pose.position.x = x
+        marker.pose.position.y = y
+        marker.pose.position.z = 0.03
+        marker.pose.orientation.z = math.sin(0.5 * yaw)
+        marker.pose.orientation.w = math.cos(0.5 * yaw)
+        marker.scale.x = length
+        marker.scale.y = width
+        marker.scale.z = height
+        marker.color = color
+        return marker
+
+    def _arrow_marker(
+        self,
+        marker_id: int,
+        namespace: str,
+        start: Tuple[float, float],
+        end: Tuple[float, float],
+        color: ColorRGBA,
+    ) -> Marker:
+        marker = self._base_marker(marker_id, namespace, Marker.ARROW)
+        start_point = Point()
+        start_point.x = start[0]
+        start_point.y = start[1]
+        start_point.z = 0.08
+        end_point = Point()
+        end_point.x = end[0]
+        end_point.y = end[1]
+        end_point.z = 0.08
+        marker.points.append(start_point)
+        marker.points.append(end_point)
+        marker.scale.x = 0.025
+        marker.scale.y = 0.055
+        marker.scale.z = 0.08
+        marker.color = color
+        return marker
+
+    def _line_strip_marker(
+        self,
+        marker_id: int,
+        namespace: str,
+        points: list,
+        color: ColorRGBA,
+    ) -> Marker:
+        marker = self._base_marker(marker_id, namespace, Marker.LINE_STRIP)
+        marker.scale.x = 0.025
+        marker.color = color
+        for x, y in points:
+            point = Point()
+            point.x = x
+            point.y = y
+            point.z = 0.06
+            marker.points.append(point)
+        return marker
+
+    def _configure_safe_navigation_for_parking(
+        self,
+        plan,
+    ) -> bool:
+        obstacle_x = [obstacle.x for obstacle in plan.cushion_obstacles]
+        obstacle_y = [obstacle.y for obstacle in plan.cushion_obstacles]
+        obstacle_radius = [obstacle.radius for obstacle in plan.cushion_obstacles]
+        return self._set_safe_nav_parameters(
+            {
+                "use_target_pose": False,
+                "orient_to_target": False,
+                "obstacles_enabled": True,
+                "robot_safety_radius": 0.0,
+                "obstacle_safe_margin": 0.0,
+                "obstacle_x": obstacle_x,
+                "obstacle_y": obstacle_y,
+                "obstacle_radius": obstacle_radius,
+            }
+        )
+
+    def _parking_step_failed(self, success: bool, message: str) -> bool:
+        if self._is_stop_requested():
+            self._publish_status("MISSION_STOPPED")
+            return True
+        if success:
+            return False
+        self._publish_status("FAILED")
+        self.get_logger().error(f"Parking step failed: {message}")
+        return True
+
+    def _run_safe_navigation_to_point(
+        self,
+        target_x: float,
+        target_y: float,
+        linear_speed: float,
+        timeout_sec: float,
+    ) -> Tuple[bool, str]:
+        if not self._safe_navigation_client.wait_for_server(
+            timeout_sec=self.action_wait_timeout_sec
+        ):
+            return (
+                False,
+                f"Action server unavailable: {self.safe_navigation_action}",
+            )
+
+        goal = NavigateToPoint.Goal()
+        goal.target_x = float(target_x)
+        goal.target_y = float(target_y)
+        goal.linear_speed = float(linear_speed)
+        goal.angular_speed = self.angular_speed
+        goal.timeout_sec = float(timeout_sec)
+
+        return self._send_goal_and_wait(
+            self._safe_navigation_client,
+            goal,
+            self._handle_safe_navigation_feedback,
+        )
+
+    def _align_to_yaw(self, target_yaw: float) -> bool:
+        start_time = self.get_clock().now()
+        rate_sec = 0.05
+        while rclpy.ok() and not self._is_stop_requested():
+            pose = self._get_fresh_pose()
+            if pose is None:
+                self._stop_robot()
+                self.get_logger().error("Align failed: stale robot pose")
+                return False
+            yaw_error = wrap_to_pi(target_yaw - pose[2])
+            if abs(yaw_error) <= self.final_yaw_tolerance:
+                self._stop_robot()
+                return True
+            elapsed = (self.get_clock().now() - start_time).nanoseconds / 1e9
+            if elapsed > self.align_timeout_sec:
+                self._stop_robot()
+                self.get_logger().error("Align failed: timeout")
+                return False
+            twist = Twist()
+            twist.angular.z = clamp(
+                self.align_gain * yaw_error,
+                -self.angular_speed,
+                self.angular_speed,
+            )
+            self._cmd_vel_publisher.publish(twist)
+            Event().wait(rate_sec)
+        self._stop_robot()
+        return False
+
+    def _set_safe_nav_parameters(self, values) -> bool:
+        if not self._safe_nav_parameter_client.wait_for_service(
+            timeout_sec=self.action_wait_timeout_sec
+        ):
+            self.get_logger().error("safe_navigation_server parameter service unavailable")
+            return False
+
+        request = SetParameters.Request()
+        request.parameters = [
+            self._parameter_message(name, value)
+            for name, value in values.items()
+        ]
+        future = self._safe_nav_parameter_client.call_async(request)
+        while rclpy.ok() and not future.done():
+            if self._is_stop_requested():
+                return False
+            Event().wait(0.05)
+        response = future.result()
+        for result in response.results:
+            if not result.successful:
+                self.get_logger().error(
+                    f"Failed to configure safe nav parameter: {result.reason}"
+                )
+                return False
+        return True
+
+    def _parameter_message(self, name: str, value) -> Parameter:
+        parameter = Parameter()
+        parameter.name = name
+        parameter.value = ParameterValue()
+        if isinstance(value, bool):
+            parameter.value.type = ParameterType.PARAMETER_BOOL
+            parameter.value.bool_value = value
+        elif isinstance(value, float):
+            parameter.value.type = ParameterType.PARAMETER_DOUBLE
+            parameter.value.double_value = value
+        elif isinstance(value, int):
+            parameter.value.type = ParameterType.PARAMETER_INTEGER
+            parameter.value.integer_value = value
+        elif isinstance(value, str):
+            parameter.value.type = ParameterType.PARAMETER_STRING
+            parameter.value.string_value = value
+        else:
+            parameter.value.type = ParameterType.PARAMETER_DOUBLE_ARRAY
+            parameter.value.double_array_value = [float(item) for item in value]
+        return parameter
 
     def _run_navigation_step(self) -> Tuple[bool, str]:
         if not self._navigation_client.wait_for_server(
@@ -255,6 +972,12 @@ class MissionManager(Node):
                 done_event.set()
                 return
 
+            with self._lock:
+                self._active_goal_handle = goal_handle
+
+            if self._stop_requested:
+                goal_handle.cancel_goal_async()
+
             result_future = goal_handle.get_result_async()
             result_future.add_done_callback(handle_result)
 
@@ -263,6 +986,8 @@ class MissionManager(Node):
             result = result_wrapper.result
             result_holder["success"] = bool(result.success)
             result_holder["message"] = str(result.message)
+            with self._lock:
+                self._active_goal_handle = None
             done_event.set()
 
         send_future = client.send_goal_async(
@@ -270,7 +995,12 @@ class MissionManager(Node):
             feedback_callback=feedback_callback,
         )
         send_future.add_done_callback(handle_goal_response)
-        done_event.wait()
+        while not done_event.wait(timeout=0.1):
+            if self._is_stop_requested():
+                with self._lock:
+                    active_goal_handle = self._active_goal_handle
+                if active_goal_handle is not None:
+                    active_goal_handle.cancel_goal_async()
 
         return bool(result_holder["success"]), str(result_holder["message"])
 
@@ -297,6 +1027,51 @@ class MissionManager(Node):
             f"{feedback.state}, "
             f"rotation_remaining={feedback.rotation_remaining:.2f}"
         )
+
+    def _pose_callback(self, message: PoseStamped) -> None:
+        pose = message.pose
+        with self._pose_lock:
+            self._latest_pose = (
+                float(pose.position.x),
+                float(pose.position.y),
+                yaw_from_quaternion(pose.orientation),
+            )
+            self._latest_pose_time = self.get_clock().now()
+
+    def _cushion_pose_callback(self, message: PoseStamped) -> None:
+        pose = message.pose
+        with self._cushion_pose_lock:
+            self._latest_cushion_pose = (
+                float(pose.position.x),
+                float(pose.position.y),
+                yaw_from_quaternion(pose.orientation),
+            )
+            self._latest_cushion_pose_time = self.get_clock().now()
+
+    def _get_fresh_pose(self) -> Optional[Tuple[float, float, float]]:
+        with self._pose_lock:
+            pose = self._latest_pose
+            pose_time = self._latest_pose_time
+        if pose is None or pose_time is None:
+            return None
+        pose_age = (self.get_clock().now() - pose_time).nanoseconds / 1e9
+        if pose_age > self.pose_timeout_sec:
+            return None
+        return pose
+
+    def _get_fresh_cushion_pose(self) -> Optional[Tuple[float, float, float]]:
+        with self._cushion_pose_lock:
+            pose = self._latest_cushion_pose
+            pose_time = self._latest_cushion_pose_time
+        if pose is None or pose_time is None:
+            return None
+        pose_age = (self.get_clock().now() - pose_time).nanoseconds / 1e9
+        if pose_age > self.pose_timeout_sec:
+            return None
+        return pose
+
+    def _stop_robot(self) -> None:
+        self._cmd_vel_publisher.publish(Twist())
 
     def _publish_status(self, status: str) -> None:
         message = String()

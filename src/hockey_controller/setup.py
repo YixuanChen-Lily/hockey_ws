@@ -16,6 +16,14 @@ setup(
             'share/' + package_name + '/launch',
             glob('launch/*.launch.py'),
         ),
+        (
+            'share/' + package_name + '/config',
+            glob('config/*.yaml'),
+        ),
+        (
+            'share/' + package_name + '/docs',
+            glob('docs/*.md'),
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -49,6 +57,10 @@ setup(
             (
                 "mission_manager = "
                 "hockey_controller.mission_manager:main"
+            ),
+            (
+                "parking_plotter = "
+                "hockey_controller.parking_plotter:main"
             ),
         ],
     },
