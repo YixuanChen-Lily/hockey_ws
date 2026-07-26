@@ -27,7 +27,6 @@ class NavigationState(Enum):
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
-
 def wrap_to_pi(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 

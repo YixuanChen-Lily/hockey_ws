@@ -1,0 +1,12 @@
+uint8 PAUSE=0
+uint8 OPEN=1
+uint8 CLOSE=2
+
+uint8 target_state
+float32 power 0.5
+---
+bool success
+string message
+builtin_interfaces/Duration duration
+---
+uint8 current_state

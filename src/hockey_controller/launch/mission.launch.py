@@ -53,6 +53,12 @@ def generate_launch_description() -> LaunchDescription:
         "safe_navigation_timeout_sec"
     )
     spin_timeout_sec = LaunchConfiguration("spin_timeout_sec")
+    arm_action_name = LaunchConfiguration("arm_action_name")
+    driver_arm_action_name = LaunchConfiguration("driver_arm_action_name")
+    gripper_action_name = LaunchConfiguration("gripper_action_name")
+    driver_gripper_action_name = LaunchConfiguration(
+        "driver_gripper_action_name"
+    )
 
     return LaunchDescription(
         [
@@ -112,6 +118,22 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="30.0",
             ),
             DeclareLaunchArgument("spin_timeout_sec", default_value="15.0"),
+            DeclareLaunchArgument(
+                "arm_action_name",
+                default_value="control_arm",
+            ),
+            DeclareLaunchArgument(
+                "driver_arm_action_name",
+                default_value="move_arm",
+            ),
+            DeclareLaunchArgument(
+                "gripper_action_name",
+                default_value="control_gripper",
+            ),
+            DeclareLaunchArgument(
+                "driver_gripper_action_name",
+                default_value="gripper",
+            ),
             Node(
                 package="hockey_controller",
                 executable="navigation_server",
@@ -162,6 +184,30 @@ def generate_launch_description() -> LaunchDescription:
                 parameters=[
                     {
                         "robot_id": robot_id,
+                    }
+                ],
+            ),
+            Node(
+                package="hockey_controller",
+                executable="move_arm_server",
+                name="move_arm_server",
+                output="screen",
+                parameters=[
+                    {
+                        "action_name": arm_action_name,
+                        "driver_action_name": driver_arm_action_name,
+                    }
+                ],
+            ),
+            Node(
+                package="hockey_controller",
+                executable="gripper_control_server",
+                name="gripper_control_server",
+                output="screen",
+                parameters=[
+                    {
+                        "action_name": gripper_action_name,
+                        "driver_action_name": driver_gripper_action_name,
                     }
                 ],
             ),
