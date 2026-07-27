@@ -26,13 +26,20 @@ class MoveArmServer(Node):
     def __init__(self) -> None:
         super().__init__("move_arm_server")
 
+        self.declare_parameter("robot_id", 1)
         self.declare_parameter("action_name", "control_arm")
         self.declare_parameter("driver_action_name", "move_arm")
         self.declare_parameter("driver_wait_timeout_sec", 5.0)
 
+        self.robot_id = int(self.get_parameter("robot_id").value)
         self.action_name = str(self.get_parameter("action_name").value)
-        self.driver_action_name = str(
+        driver_action_name = str(
             self.get_parameter("driver_action_name").value
+        )
+        self.driver_action_name = (
+            driver_action_name
+            if driver_action_name.startswith("/")
+            else f"/robot{self.robot_id}/{driver_action_name}"
         )
         self.driver_wait_timeout_sec = float(
             self.get_parameter("driver_wait_timeout_sec").value

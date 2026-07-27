@@ -71,6 +71,54 @@ def generate_launch_description() -> LaunchDescription:
         "driver_gripper_action_name"
     )
 
+    # ================================================================
+    # Hockey-stick pickup and ready-position tuning parameters.
+    #
+    # Keep stick_setup_enabled false until the three arm X/Z positions
+    # have been measured on the real robot. MoveArm uses meters: +X points
+    # forward and +Z points upward. With *_relative=false, X/Z are absolute
+    # in arm_base_link; with *_relative=true, they are motion increments.
+    # ================================================================
+    stick_setup_enabled = LaunchConfiguration("stick_setup_enabled")
+
+    # Step 1: arm end-effector pose used to reach the hockey stick.
+    grab_arm_x = LaunchConfiguration("grab_arm_x")
+    grab_arm_z = LaunchConfiguration("grab_arm_z")
+    grab_arm_relative = LaunchConfiguration("grab_arm_relative")
+    grab_arm_timeout_sec = LaunchConfiguration("grab_arm_timeout_sec")
+    grab_arm_settle_sec = LaunchConfiguration("grab_arm_settle_sec")
+
+    # Step 2: gripper close power, Action timeout, and settling time.
+    gripper_close_power = LaunchConfiguration("gripper_close_power")
+    gripper_close_timeout_sec = LaunchConfiguration(
+        "gripper_close_timeout_sec"
+    )
+    gripper_close_settle_sec = LaunchConfiguration(
+        "gripper_close_settle_sec"
+    )
+
+    # Step 3: arm end-effector pose used to lift the captured stick.
+    lift_arm_x = LaunchConfiguration("lift_arm_x")
+    lift_arm_z = LaunchConfiguration("lift_arm_z")
+    lift_arm_relative = LaunchConfiguration("lift_arm_relative")
+    lift_arm_timeout_sec = LaunchConfiguration("lift_arm_timeout_sec")
+    lift_arm_settle_sec = LaunchConfiguration("lift_arm_settle_sec")
+
+    # Step 4: open-loop reverse motion using /robotN/cmd_vel Twist.
+    backward_distance = LaunchConfiguration("backward_distance")
+    backward_duration_sec = LaunchConfiguration("backward_duration_sec")
+    backward_publish_rate_hz = LaunchConfiguration(
+        "backward_publish_rate_hz"
+    )
+    backward_max_speed = LaunchConfiguration("backward_max_speed")
+
+    # Step 5: arm end-effector pose for the ready-to-hit configuration.
+    ready_arm_x = LaunchConfiguration("ready_arm_x")
+    ready_arm_z = LaunchConfiguration("ready_arm_z")
+    ready_arm_relative = LaunchConfiguration("ready_arm_relative")
+    ready_arm_timeout_sec = LaunchConfiguration("ready_arm_timeout_sec")
+    ready_arm_settle_sec = LaunchConfiguration("ready_arm_settle_sec")
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("namespace", default_value=""),
@@ -159,6 +207,63 @@ def generate_launch_description() -> LaunchDescription:
                 "driver_gripper_action_name",
                 default_value="gripper",
             ),
+            # ============================================================
+            # Hockey-stick pickup and ready-position parameters.
+            #
+            # Action timeout values are maximum completion times. Settle
+            # values are additional waits after successful Action results.
+            # The task stays disabled by default because zero X/Z values are
+            # placeholders that must be calibrated on the physical robot.
+            # ============================================================
+            DeclareLaunchArgument(
+                "stick_setup_enabled",
+                default_value="false",
+            ),
+            # Step 1: move the arm to the stick pickup pose.
+            DeclareLaunchArgument("grab_arm_x", default_value="0.0"),
+            DeclareLaunchArgument("grab_arm_z", default_value="0.0"),
+            DeclareLaunchArgument("grab_arm_relative", default_value="false"),
+            DeclareLaunchArgument("grab_arm_timeout_sec", default_value="8.0"),
+            DeclareLaunchArgument("grab_arm_settle_sec", default_value="0.3"),
+            # Step 2: close the gripper (power must remain in [0, 1]).
+            DeclareLaunchArgument(
+                "gripper_close_power",
+                default_value="0.5",
+            ),
+            DeclareLaunchArgument(
+                "gripper_close_timeout_sec",
+                default_value="5.0",
+            ),
+            DeclareLaunchArgument(
+                "gripper_close_settle_sec",
+                default_value="0.5",
+            ),
+            # Step 3: lift the arm while retaining the closed gripper.
+            DeclareLaunchArgument("lift_arm_x", default_value="0.0"),
+            DeclareLaunchArgument("lift_arm_z", default_value="0.0"),
+            DeclareLaunchArgument("lift_arm_relative", default_value="false"),
+            DeclareLaunchArgument("lift_arm_timeout_sec", default_value="8.0"),
+            DeclareLaunchArgument("lift_arm_settle_sec", default_value="0.3"),
+            # Step 4: reverse distance and duration determine Twist speed.
+            DeclareLaunchArgument("backward_distance", default_value="0.30"),
+            DeclareLaunchArgument(
+                "backward_duration_sec",
+                default_value="2.0",
+            ),
+            DeclareLaunchArgument(
+                "backward_publish_rate_hz",
+                default_value="20.0",
+            ),
+            DeclareLaunchArgument("backward_max_speed", default_value="0.30"),
+            # Step 5: lower the arm into the ready-to-hit pose.
+            DeclareLaunchArgument("ready_arm_x", default_value="0.0"),
+            DeclareLaunchArgument("ready_arm_z", default_value="0.0"),
+            DeclareLaunchArgument("ready_arm_relative", default_value="false"),
+            DeclareLaunchArgument(
+                "ready_arm_timeout_sec",
+                default_value="8.0",
+            ),
+            DeclareLaunchArgument("ready_arm_settle_sec", default_value="0.3"),
             Node(
                 package="hockey_controller",
                 executable="navigation_server",
@@ -224,6 +329,7 @@ def generate_launch_description() -> LaunchDescription:
                 condition=IfCondition(use_manipulator),
                 parameters=[
                     {
+                        "robot_id": robot_id,
                         "action_name": arm_action_name,
                         "driver_action_name": driver_arm_action_name,
                     }
@@ -238,6 +344,7 @@ def generate_launch_description() -> LaunchDescription:
                 condition=IfCondition(use_manipulator),
                 parameters=[
                     {
+                        "robot_id": robot_id,
                         "action_name": gripper_action_name,
                         "driver_action_name": driver_gripper_action_name,
                     }
@@ -254,6 +361,8 @@ def generate_launch_description() -> LaunchDescription:
                         "navigation_action": "navigate_to_point",
                         "safe_navigation_action": "safe_navigate_to_point",
                         "spin_action": "spin",
+                        "arm_action": arm_action_name,
+                        "gripper_action": gripper_action_name,
                         "robot_id": robot_id,
                         "cushion_pose_topic": target_pose_topic,
                         "parking_enabled": parking_enabled,
@@ -292,6 +401,33 @@ def generate_launch_description() -> LaunchDescription:
                             safe_navigation_timeout_sec
                         ),
                         "spin_timeout_sec": spin_timeout_sec,
+                        # Stick pickup and ready-position task. See the
+                        # DeclareLaunchArgument block above before tuning.
+                        "stick_setup_enabled": stick_setup_enabled,
+                        "grab_arm_x": grab_arm_x,
+                        "grab_arm_z": grab_arm_z,
+                        "grab_arm_relative": grab_arm_relative,
+                        "grab_arm_timeout_sec": grab_arm_timeout_sec,
+                        "grab_arm_settle_sec": grab_arm_settle_sec,
+                        "gripper_close_power": gripper_close_power,
+                        "gripper_close_timeout_sec": (
+                            gripper_close_timeout_sec
+                        ),
+                        "gripper_close_settle_sec": gripper_close_settle_sec,
+                        "lift_arm_x": lift_arm_x,
+                        "lift_arm_z": lift_arm_z,
+                        "lift_arm_relative": lift_arm_relative,
+                        "lift_arm_timeout_sec": lift_arm_timeout_sec,
+                        "lift_arm_settle_sec": lift_arm_settle_sec,
+                        "backward_distance": backward_distance,
+                        "backward_duration_sec": backward_duration_sec,
+                        "backward_publish_rate_hz": backward_publish_rate_hz,
+                        "backward_max_speed": backward_max_speed,
+                        "ready_arm_x": ready_arm_x,
+                        "ready_arm_z": ready_arm_z,
+                        "ready_arm_relative": ready_arm_relative,
+                        "ready_arm_timeout_sec": ready_arm_timeout_sec,
+                        "ready_arm_settle_sec": ready_arm_settle_sec,
                     }
                 ],
             ),
