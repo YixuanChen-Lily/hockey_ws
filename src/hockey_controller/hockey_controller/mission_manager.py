@@ -2,6 +2,7 @@
 
 import math
 from threading import Event, Lock, Thread
+from time import monotonic
 from typing import Optional, Tuple
 
 import rclpy
@@ -18,7 +19,10 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 
-from hockey_interfaces.action import NavigateToPoint, Spin
+from hockey_interfaces.action import GripperControl
+from hockey_interfaces.action import MoveArm
+from hockey_interfaces.action import NavigateToPoint
+from hockey_interfaces.action import Spin
 from hockey_controller.cushion_parking_planner import CushionGeometry
 from hockey_controller.cushion_parking_planner import ParkingPlannerConfig
 from hockey_controller.cushion_parking_planner import cushion_axes
@@ -29,7 +33,7 @@ from hockey_controller.navigation_server import yaw_from_quaternion
 
 
 class MissionManager(Node):
-    """Runs navigation, safe navigation, then transitions to spinning."""
+    """Coordinate parking, stick pickup, navigation, and spinning tasks."""
 
     def __init__(self) -> None:
         super().__init__("mission_manager")
@@ -37,6 +41,8 @@ class MissionManager(Node):
         self.declare_parameter("navigation_action", "navigate_to_point")
         self.declare_parameter("safe_navigation_action", "safe_navigate_to_point")
         self.declare_parameter("spin_action", "spin")
+        self.declare_parameter("arm_action", "control_arm")
+        self.declare_parameter("gripper_action", "control_gripper")
         self.declare_parameter("robot_id", 1)
         self.declare_parameter("pose_topic", "")
         self.declare_parameter("cushion_pose_topic", "")
@@ -75,6 +81,48 @@ class MissionManager(Node):
         self.declare_parameter("spin_timeout_sec", 15.0)
         self.declare_parameter("action_wait_timeout_sec", 5.0)
 
+        # ================================================================
+        # Hockey-stick pickup and ready-position parameters.
+        #
+        # Keep this task disabled until all arm X/Z positions have been
+        # measured on the real robot. MoveArm uses the coordinate convention
+        # and units provided by the RoboMaster arm driver.
+        # ================================================================
+        self.declare_parameter("stick_setup_enabled", False)
+
+        # Step 1: move the arm end effector to the stick pickup position.
+        self.declare_parameter("grab_arm_x", 0.0)
+        self.declare_parameter("grab_arm_z", 0.0)
+        self.declare_parameter("grab_arm_relative", False)
+        self.declare_parameter("grab_arm_timeout_sec", 8.0)
+        self.declare_parameter("grab_arm_settle_sec", 0.3)
+
+        # Step 2: close the gripper and allow the stick to settle in it.
+        self.declare_parameter("gripper_close_power", 0.5)
+        self.declare_parameter("gripper_close_timeout_sec", 5.0)
+        self.declare_parameter("gripper_close_settle_sec", 0.5)
+
+        # Step 3: lift the captured stick clear of the floor/fixture.
+        self.declare_parameter("lift_arm_x", 1.0)
+        self.declare_parameter("lift_arm_z", 2.0)
+        self.declare_parameter("lift_arm_relative", False)
+        self.declare_parameter("lift_arm_timeout_sec", 8.0)
+        self.declare_parameter("lift_arm_settle_sec", 0.3)
+
+        # Step 4: open-loop reverse motion. The commanded linear velocity is
+        # -backward_distance / backward_duration_sec and is sent as Twist.
+        self.declare_parameter("backward_distance", 0.30)
+        self.declare_parameter("backward_duration_sec", 2.0)
+        self.declare_parameter("backward_publish_rate_hz", 20.0)
+        self.declare_parameter("backward_max_speed", 0.30)
+
+        # Step 5: lower the arm into the ready-to-hit end-effector position.
+        self.declare_parameter("ready_arm_x", 0.0)
+        self.declare_parameter("ready_arm_z", 0.0)
+        self.declare_parameter("ready_arm_relative", False)
+        self.declare_parameter("ready_arm_timeout_sec", 8.0)
+        self.declare_parameter("ready_arm_settle_sec", 0.3)
+
         self.navigation_action = str(
             self.get_parameter("navigation_action").value
         )
@@ -82,6 +130,8 @@ class MissionManager(Node):
             self.get_parameter("safe_navigation_action").value
         )
         self.spin_action = str(self.get_parameter("spin_action").value)
+        self.arm_action = str(self.get_parameter("arm_action").value)
+        self.gripper_action = str(self.get_parameter("gripper_action").value)
         self.robot_id = int(self.get_parameter("robot_id").value)
         pose_topic = str(self.get_parameter("pose_topic").value)
         cushion_pose_topic = str(self.get_parameter("cushion_pose_topic").value)
@@ -115,6 +165,7 @@ class MissionManager(Node):
         self.action_wait_timeout_sec = float(
             self.get_parameter("action_wait_timeout_sec").value
         )
+        self._reload_stick_setup_parameters()
 
         self._lock = Lock()
         self._running = False
@@ -188,6 +239,18 @@ class MissionManager(Node):
             self.spin_action,
             callback_group=self._callback_group,
         )
+        self._arm_client = ActionClient(
+            self,
+            MoveArm,
+            self.arm_action,
+            callback_group=self._callback_group,
+        )
+        self._gripper_client = ActionClient(
+            self,
+            GripperControl,
+            self.gripper_action,
+            callback_group=self._callback_group,
+        )
         self._safe_nav_parameter_client = self.create_client(
             SetParameters,
             "/safe_navigation_server/set_parameters",
@@ -201,7 +264,8 @@ class MissionManager(Node):
             f"  step2 action = {self.spin_action}\n"
             f"  safe target  = "
             f"({self.safe_target_x:.2f}, {self.safe_target_y:.2f})\n"
-            f"  parking     = {self.parking_enabled}\n"
+            f"  parking      = {self.parking_enabled}\n"
+            f"  stick setup  = {self.stick_setup_enabled}\n"
             f"  rotations    = {self.rotations}"
         )
 
@@ -219,6 +283,13 @@ class MissionManager(Node):
                 return response
 
             self._reload_parameters()
+            parameters_valid, parameter_message = (
+                self._validate_stick_setup_parameters()
+            )
+            if not parameters_valid:
+                response.success = False
+                response.message = parameter_message
+                return response
             self._stop_requested = False
             self._running = True
 
@@ -247,6 +318,7 @@ class MissionManager(Node):
 
         if active_goal_handle is not None:
             active_goal_handle.cancel_goal_async()
+        self._stop_robot()
 
         self._publish_status("MISSION_STOPPING")
         response.success = True
@@ -280,6 +352,141 @@ class MissionManager(Node):
         self.action_wait_timeout_sec = float(
             self.get_parameter("action_wait_timeout_sec").value
         )
+        self._reload_stick_setup_parameters()
+
+    def _reload_stick_setup_parameters(self) -> None:
+        self.stick_setup_enabled = bool(
+            self.get_parameter("stick_setup_enabled").value
+        )
+        self.grab_arm_x = float(self.get_parameter("grab_arm_x").value)
+        self.grab_arm_z = float(self.get_parameter("grab_arm_z").value)
+        self.grab_arm_relative = bool(
+            self.get_parameter("grab_arm_relative").value
+        )
+        self.grab_arm_timeout_sec = float(
+            self.get_parameter("grab_arm_timeout_sec").value
+        )
+        self.grab_arm_settle_sec = float(
+            self.get_parameter("grab_arm_settle_sec").value
+        )
+        self.gripper_close_power = float(
+            self.get_parameter("gripper_close_power").value
+        )
+        self.gripper_close_timeout_sec = float(
+            self.get_parameter("gripper_close_timeout_sec").value
+        )
+        self.gripper_close_settle_sec = float(
+            self.get_parameter("gripper_close_settle_sec").value
+        )
+        self.lift_arm_x = float(self.get_parameter("lift_arm_x").value)
+        self.lift_arm_z = float(self.get_parameter("lift_arm_z").value)
+        self.lift_arm_relative = bool(
+            self.get_parameter("lift_arm_relative").value
+        )
+        self.lift_arm_timeout_sec = float(
+            self.get_parameter("lift_arm_timeout_sec").value
+        )
+        self.lift_arm_settle_sec = float(
+            self.get_parameter("lift_arm_settle_sec").value
+        )
+        self.backward_distance = float(
+            self.get_parameter("backward_distance").value
+        )
+        self.backward_duration_sec = float(
+            self.get_parameter("backward_duration_sec").value
+        )
+        self.backward_publish_rate_hz = float(
+            self.get_parameter("backward_publish_rate_hz").value
+        )
+        self.backward_max_speed = float(
+            self.get_parameter("backward_max_speed").value
+        )
+        self.ready_arm_x = float(self.get_parameter("ready_arm_x").value)
+        self.ready_arm_z = float(self.get_parameter("ready_arm_z").value)
+        self.ready_arm_relative = bool(
+            self.get_parameter("ready_arm_relative").value
+        )
+        self.ready_arm_timeout_sec = float(
+            self.get_parameter("ready_arm_timeout_sec").value
+        )
+        self.ready_arm_settle_sec = float(
+            self.get_parameter("ready_arm_settle_sec").value
+        )
+
+    def _validate_stick_setup_parameters(self) -> Tuple[bool, str]:
+        if not self.stick_setup_enabled:
+            return True, "Stick setup is disabled"
+
+        finite_values = {
+            "grab_arm_x": self.grab_arm_x,
+            "grab_arm_z": self.grab_arm_z,
+            "grab_arm_timeout_sec": self.grab_arm_timeout_sec,
+            "grab_arm_settle_sec": self.grab_arm_settle_sec,
+            "gripper_close_power": self.gripper_close_power,
+            "gripper_close_timeout_sec": self.gripper_close_timeout_sec,
+            "gripper_close_settle_sec": self.gripper_close_settle_sec,
+            "lift_arm_x": self.lift_arm_x,
+            "lift_arm_z": self.lift_arm_z,
+            "lift_arm_timeout_sec": self.lift_arm_timeout_sec,
+            "lift_arm_settle_sec": self.lift_arm_settle_sec,
+            "backward_distance": self.backward_distance,
+            "backward_duration_sec": self.backward_duration_sec,
+            "backward_publish_rate_hz": self.backward_publish_rate_hz,
+            "backward_max_speed": self.backward_max_speed,
+            "ready_arm_x": self.ready_arm_x,
+            "ready_arm_z": self.ready_arm_z,
+            "ready_arm_timeout_sec": self.ready_arm_timeout_sec,
+            "ready_arm_settle_sec": self.ready_arm_settle_sec,
+        }
+        for name, value in finite_values.items():
+            if not math.isfinite(value):
+                return (
+                    False,
+                    f"Invalid stick setup parameter: {name} is not finite",
+                )
+
+        positive_values = {
+            "grab_arm_timeout_sec": self.grab_arm_timeout_sec,
+            "gripper_close_timeout_sec": self.gripper_close_timeout_sec,
+            "lift_arm_timeout_sec": self.lift_arm_timeout_sec,
+            "backward_distance": self.backward_distance,
+            "backward_duration_sec": self.backward_duration_sec,
+            "backward_publish_rate_hz": self.backward_publish_rate_hz,
+            "backward_max_speed": self.backward_max_speed,
+            "ready_arm_timeout_sec": self.ready_arm_timeout_sec,
+        }
+        for name, value in positive_values.items():
+            if value <= 0.0:
+                return (
+                    False,
+                    f"Invalid stick setup parameter: {name} must be > 0",
+                )
+
+        settle_values = {
+            "grab_arm_settle_sec": self.grab_arm_settle_sec,
+            "gripper_close_settle_sec": self.gripper_close_settle_sec,
+            "lift_arm_settle_sec": self.lift_arm_settle_sec,
+            "ready_arm_settle_sec": self.ready_arm_settle_sec,
+        }
+        for name, value in settle_values.items():
+            if value < 0.0:
+                return (
+                    False,
+                    f"Invalid stick setup parameter: {name} must be >= 0",
+                )
+
+        if not 0.0 <= self.gripper_close_power <= 1.0:
+            return False, "gripper_close_power must be in [0, 1]"
+
+        requested_speed = self.backward_distance / self.backward_duration_sec
+        if requested_speed > self.backward_max_speed:
+            return (
+                False,
+                "backward_distance / backward_duration_sec exceeds "
+                "backward_max_speed",
+            )
+
+        return True, "Stick setup parameters are valid"
 
     def _reload_parking_parameters(self) -> None:
         self.cushion_length = float(self.get_parameter("cushion_length").value)
@@ -397,7 +604,9 @@ class MissionManager(Node):
             return self._stop_requested
 
     def _run_parking_mission(self) -> None:
-        self._publish_status("CHECK_CUSHION_SIDE")
+        self._publish_status("STEP1_PARKING")
+        self.get_logger().info("Step1 parking started.")
+        self._publish_status("STEP1_CHECK_CUSHION_SIDE")
         robot_pose = self._get_fresh_pose()
         cushion_pose = self._get_fresh_cushion_pose()
         if robot_pose is None or cushion_pose is None:
@@ -442,9 +651,9 @@ class MissionManager(Node):
             return
 
         if not plan.already_front_side:
-            self._publish_status("SELECT_BYPASS_SIDE")
+            self._publish_status("STEP1_SELECT_BYPASS_SIDE")
             self.get_logger().info(f"Selected {plan.bypass_side} bypass route")
-            self._publish_status("GO_TO_BYPASS_WAYPOINT")
+            self._publish_status("STEP1_GO_TO_BYPASS_WAYPOINT")
             success, message = self._run_safe_navigation_to_point(
                 plan.waypoints[0][0],
                 plan.waypoints[0][1],
@@ -456,7 +665,7 @@ class MissionManager(Node):
         else:
             self.get_logger().info("Robot already on cushion parking side")
 
-        self._publish_status("GO_TO_PRE_PARK_POINT")
+        self._publish_status("STEP1_GO_TO_PRE_PARK_POINT")
         success, message = self._run_safe_navigation_to_point(
             plan.pre_park_point[0],
             plan.pre_park_point[1],
@@ -466,12 +675,12 @@ class MissionManager(Node):
         if self._parking_step_failed(success, message):
             return
 
-        self._publish_status("ALIGN_FOR_FINAL_APPROACH")
+        self._publish_status("STEP1_ALIGN_FOR_FINAL_APPROACH")
         if not self._align_to_yaw(plan.final_yaw):
             self._publish_status("FAILED")
             return
 
-        self._publish_status("FINAL_APPROACH")
+        self._publish_status("STEP1_FINAL_APPROACH")
         self._set_safe_nav_parameters(
             {
                 "point_gain": self.final_approach_point_gain,
@@ -494,8 +703,179 @@ class MissionManager(Node):
             self._publish_status("FAILED")
             return
 
-        self._publish_status("DONE")
-        self.get_logger().info("Parking mission completed successfully.")
+        self._publish_status("STEP1_PARKING_DONE")
+        self.get_logger().info(
+            "Step1 parking succeeded. Transitioning to step2 stick pickup."
+        )
+        self._publish_status("STEP2_PICK_UP_STICK")
+
+        stick_success, stick_message = self._run_stick_setup_mission()
+        if self._is_stop_requested():
+            self._publish_status("MISSION_STOPPED")
+            return
+        if not stick_success:
+            self._publish_status("STEP2_PICK_UP_STICK_FAILED")
+            self.get_logger().error(f"Step2 stick pickup failed: {stick_message}")
+            return
+
+        self._publish_status("MISSION_DONE")
+        self.get_logger().info("Mission completed successfully: parking and stick pickup finished.")
+
+    def _run_stick_setup_mission(self) -> Tuple[bool, str]:
+        """Pick up the hockey stick and place the arm in its ready pose."""
+        if not self.stick_setup_enabled:
+            self._publish_status("STEP2_PICK_UP_STICK_SKIPPED")
+            self.get_logger().warning(
+                "Step2 stick pickup is disabled; set stick_setup_enabled=true "
+                "after calibrating the arm positions."
+            )
+            return True, "Stick setup disabled"
+
+        success, message = self._run_arm_step(
+            "STEP2_MOVE_ARM_TO_GRAB",
+            self.grab_arm_x,
+            self.grab_arm_z,
+            self.grab_arm_relative,
+            self.grab_arm_timeout_sec,
+            self.grab_arm_settle_sec,
+        )
+        if not success:
+            return False, f"Move arm to grab position: {message}"
+
+        success, message = self._run_gripper_close_step()
+        if not success:
+            return False, f"Close gripper: {message}"
+
+        success, message = self._run_arm_step(
+            "STEP2_LIFT_HOCKEY_STICK",
+            self.lift_arm_x,
+            self.lift_arm_z,
+            self.lift_arm_relative,
+            self.lift_arm_timeout_sec,
+            self.lift_arm_settle_sec,
+        )
+        if not success:
+            return False, f"Lift hockey stick: {message}"
+
+        success, message = self._run_backward_step()
+        if not success:
+            return False, f"Back up with hockey stick: {message}"
+
+        success, message = self._run_arm_step(
+            "STEP2_LOWER_ARM_TO_READY",
+            self.ready_arm_x,
+            self.ready_arm_z,
+            self.ready_arm_relative,
+            self.ready_arm_timeout_sec,
+            self.ready_arm_settle_sec,
+        )
+        if not success:
+            return False, f"Lower arm to ready position: {message}"
+
+        self._publish_status("STEP2_STICK_READY")
+        self.get_logger().info("Hockey stick is in the ready-to-hit position.")
+        return True, "Hockey stick setup completed"
+
+    def _run_arm_step(
+        self,
+        status: str,
+        x: float,
+        z: float,
+        relative: bool,
+        timeout_sec: float,
+        settle_sec: float,
+    ) -> Tuple[bool, str]:
+        self._publish_status(status)
+        if self._is_stop_requested():
+            return False, "Mission stop requested"
+        if not self._arm_client.wait_for_server(
+            timeout_sec=self.action_wait_timeout_sec
+        ):
+            return False, f"Action server unavailable: {self.arm_action}"
+
+        goal = MoveArm.Goal()
+        goal.x = float(x)
+        goal.z = float(z)
+        goal.relative = bool(relative)
+        success, message = self._send_goal_and_wait(
+            self._arm_client,
+            goal,
+            self._handle_arm_feedback,
+            timeout_sec=timeout_sec,
+        )
+        if not success:
+            return False, message
+        if not self._interruptible_wait(settle_sec):
+            return False, "Mission stop requested during arm settling"
+        return True, message
+
+    def _run_gripper_close_step(self) -> Tuple[bool, str]:
+        self._publish_status("STEP2_CLOSE_GRIPPER")
+        if self._is_stop_requested():
+            return False, "Mission stop requested"
+        if not self._gripper_client.wait_for_server(
+            timeout_sec=self.action_wait_timeout_sec
+        ):
+            return False, f"Action server unavailable: {self.gripper_action}"
+
+        goal = GripperControl.Goal()
+        goal.target_state = GripperControl.Goal.CLOSE
+        goal.power = float(self.gripper_close_power)
+        success, message = self._send_goal_and_wait(
+            self._gripper_client,
+            goal,
+            self._handle_gripper_feedback,
+            timeout_sec=self.gripper_close_timeout_sec,
+        )
+        if not success:
+            return False, message
+        if not self._interruptible_wait(self.gripper_close_settle_sec):
+            return False, "Mission stop requested while gripper was settling"
+        return True, message
+
+    def _run_backward_step(self) -> Tuple[bool, str]:
+        self._publish_status("STEP2_BACK_UP_WITH_STICK")
+        if self._is_stop_requested():
+            return False, "Mission stop requested"
+
+        backward_speed = -self.backward_distance / self.backward_duration_sec
+        period_sec = 1.0 / self.backward_publish_rate_hz
+        twist = Twist()
+        twist.linear.x = backward_speed
+        start_time = monotonic()
+
+        self.get_logger().info(
+            "Backing up with hockey stick: "
+            f"distance={self.backward_distance:.3f}, "
+            f"duration={self.backward_duration_sec:.3f}, "
+            f"speed={backward_speed:.3f}"
+        )
+        try:
+            while (
+                rclpy.ok()
+                and monotonic() - start_time < self.backward_duration_sec
+            ):
+                if self._is_stop_requested():
+                    return (
+                        False,
+                        "Mission stop requested during reverse motion",
+                    )
+                self._cmd_vel_publisher.publish(twist)
+                Event().wait(period_sec)
+        finally:
+            self._stop_robot()
+
+        if not rclpy.ok():
+            return False, "ROS shutdown interrupted reverse motion"
+        return True, "Reverse motion completed"
+
+    def _interruptible_wait(self, duration_sec: float) -> bool:
+        end_time = monotonic() + duration_sec
+        while rclpy.ok() and monotonic() < end_time:
+            if self._is_stop_requested():
+                return False
+            Event().wait(min(0.05, max(0.0, end_time - monotonic())))
+        return rclpy.ok() and not self._is_stop_requested()
 
     def _control_point_goal_for_robot_pose(
         self,
@@ -958,49 +1338,88 @@ class MissionManager(Node):
         client,
         goal,
         feedback_callback,
+        timeout_sec: Optional[float] = None,
     ) -> Tuple[bool, str]:
         done_event = Event()
+        abandoned_event = Event()
+        goal_handle_holder = {"handle": None}
         result_holder = {
             "success": False,
             "message": "Action did not finish",
         }
 
         def handle_goal_response(future) -> None:
-            goal_handle = future.result()
+            try:
+                goal_handle = future.result()
+            except Exception as exception:
+                result_holder["message"] = f"Goal request failed: {exception}"
+                done_event.set()
+                return
             if not goal_handle.accepted:
                 result_holder["message"] = "Goal rejected"
                 done_event.set()
                 return
 
+            if abandoned_event.is_set():
+                goal_handle.cancel_goal_async()
+                return
+
+            goal_handle_holder["handle"] = goal_handle
             with self._lock:
                 self._active_goal_handle = goal_handle
 
-            if self._stop_requested:
+            if self._is_stop_requested():
                 goal_handle.cancel_goal_async()
 
             result_future = goal_handle.get_result_async()
             result_future.add_done_callback(handle_result)
 
         def handle_result(future) -> None:
-            result_wrapper = future.result()
-            result = result_wrapper.result
-            result_holder["success"] = bool(result.success)
-            result_holder["message"] = str(result.message)
+            try:
+                result_wrapper = future.result()
+                result = result_wrapper.result
+                result_holder["success"] = bool(result.success)
+                result_holder["message"] = str(result.message)
+            except Exception as exception:
+                result_holder["message"] = f"Action result failed: {exception}"
             with self._lock:
-                self._active_goal_handle = None
+                if self._active_goal_handle is goal_handle_holder["handle"]:
+                    self._active_goal_handle = None
             done_event.set()
 
-        send_future = client.send_goal_async(
-            goal,
-            feedback_callback=feedback_callback,
-        )
+        try:
+            send_future = client.send_goal_async(
+                goal,
+                feedback_callback=feedback_callback,
+            )
+        except Exception as exception:
+            return False, f"Failed to send action goal: {exception}"
         send_future.add_done_callback(handle_goal_response)
-        while not done_event.wait(timeout=0.1):
+        start_time = monotonic()
+        while not done_event.wait(timeout=0.05):
             if self._is_stop_requested():
+                abandoned_event.set()
                 with self._lock:
                     active_goal_handle = self._active_goal_handle
+                    self._active_goal_handle = None
                 if active_goal_handle is not None:
                     active_goal_handle.cancel_goal_async()
+                return False, "Mission stop requested"
+
+            if (
+                timeout_sec is not None
+                and monotonic() - start_time >= timeout_sec
+            ):
+                abandoned_event.set()
+                with self._lock:
+                    active_goal_handle = self._active_goal_handle
+                    self._active_goal_handle = None
+                if active_goal_handle is not None:
+                    active_goal_handle.cancel_goal_async()
+                return (
+                    False,
+                    f"Action timed out after {timeout_sec:.2f} seconds",
+                )
 
         return bool(result_holder["success"]), str(result_holder["message"])
 
@@ -1026,6 +1445,18 @@ class MissionManager(Node):
             "Step2 feedback: "
             f"{feedback.state}, "
             f"rotation_remaining={feedback.rotation_remaining:.2f}"
+        )
+
+    def _handle_arm_feedback(self, feedback_message) -> None:
+        feedback = feedback_message.feedback
+        self.get_logger().info(
+            f"Arm action progress={feedback.progress:.2f}"
+        )
+
+    def _handle_gripper_feedback(self, feedback_message) -> None:
+        feedback = feedback_message.feedback
+        self.get_logger().info(
+            f"Gripper current state={feedback.current_state}"
         )
 
     def _pose_callback(self, message: PoseStamped) -> None:
