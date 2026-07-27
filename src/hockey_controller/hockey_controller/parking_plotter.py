@@ -22,7 +22,7 @@ class ParkingPlotter(Node):
 
         self.declare_parameter("robot_id", 1)
         self.declare_parameter("pose_topic", "")
-        self.declare_parameter("marker_topic", "/mission/parking_markers")
+        self.declare_parameter("marker_topic", "mission/parking_markers")
         self.declare_parameter("plot_rate_hz", 5.0)
         self.declare_parameter("trajectory_length", 400)
         self.declare_parameter("axis_margin", 0.35)
@@ -67,7 +67,11 @@ class ParkingPlotter(Node):
         )
 
         self._plt, self._patches, self._transforms = self._import_matplotlib()
-        self._figure, self._axis = self._plt.subplots()
+        self._figure = self._plt.figure(figsize=(12.0, 6.5))
+        grid = self._figure.add_gridspec(1, 2, width_ratios=[3.2, 1.2])
+        self._axis = self._figure.add_subplot(grid[0, 0])
+        self._legend_axis = self._figure.add_subplot(grid[0, 1])
+        self._legend_axis.axis("off")
         if self.show_gui:
             self._figure.canvas.manager.set_window_title("Parking Radius Plot")
 
@@ -144,6 +148,8 @@ class ParkingPlotter(Node):
             self._dirty = False
 
         self._axis.clear()
+        self._legend_axis.clear()
+        self._legend_axis.axis("off")
         self._axis.set_title("Parking Obstacles, Safety Radius, and Trajectory")
         self._axis.set_xlabel("x [m]")
         self._axis.set_ylabel("y [m]")
@@ -166,7 +172,7 @@ class ParkingPlotter(Node):
         if self.show_gui:
             self._figure.canvas.draw_idle()
         else:
-            self._figure.savefig(self.output_path, dpi=130)
+            self._figure.savefig(self.output_path, dpi=130, bbox_inches="tight")
 
     def _draw_marker(self, marker: Marker) -> List[Tuple[float, float]]:
         if marker.type == Marker.CYLINDER:
@@ -279,7 +285,12 @@ class ParkingPlotter(Node):
         for handle, label in zip(handles, labels):
             unique.setdefault(label, handle)
         if unique:
-            self._axis.legend(unique.values(), unique.keys(), loc="upper right")
+            self._legend_axis.legend(
+                unique.values(),
+                unique.keys(),
+                loc="upper left",
+                frameon=True,
+            )
 
 
 def main(args=None) -> None:

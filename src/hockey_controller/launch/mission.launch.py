@@ -1,10 +1,12 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
+    namespace = LaunchConfiguration("namespace")
     robot_id = LaunchConfiguration("robot_id")
     target_x = LaunchConfiguration("target_x")
     target_y = LaunchConfiguration("target_y")
@@ -35,15 +37,23 @@ def generate_launch_description() -> LaunchDescription:
     parking_front_axis = LaunchConfiguration("parking_front_axis")
     front_normal_sign = LaunchConfiguration("front_normal_sign")
     desired_normal_distance = LaunchConfiguration("desired_normal_distance")
+    parking_lateral_offset = LaunchConfiguration("parking_lateral_offset")
     pre_park_backoff = LaunchConfiguration("pre_park_backoff")
     parking_robot_safety_radius = LaunchConfiguration("parking_robot_safety_radius")
     side_clearance = LaunchConfiguration("side_clearance")
     front_clearance = LaunchConfiguration("front_clearance")
     parking_safety_margin = LaunchConfiguration("parking_safety_margin")
     cushion_circle_spacing = LaunchConfiguration("cushion_circle_spacing")
+    cushion_obstacle_axis = LaunchConfiguration("cushion_obstacle_axis")
+    cushion_obstacle_radius_override = LaunchConfiguration(
+        "cushion_obstacle_radius_override"
+    )
     parking_lookahead_distance = LaunchConfiguration("parking_lookahead_distance")
     final_approach_speed = LaunchConfiguration("final_approach_speed")
     final_approach_point_gain = LaunchConfiguration("final_approach_point_gain")
+    align_gain = LaunchConfiguration("align_gain")
+    align_timeout_sec = LaunchConfiguration("align_timeout_sec")
+    final_yaw_tolerance = LaunchConfiguration("final_yaw_tolerance")
     visualization_frame = LaunchConfiguration("visualization_frame")
     rotations = LaunchConfiguration("rotations")
     linear_speed = LaunchConfiguration("linear_speed")
@@ -54,6 +64,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     spin_timeout_sec = LaunchConfiguration("spin_timeout_sec")
     arm_action_name = LaunchConfiguration("arm_action_name")
+    use_manipulator = LaunchConfiguration("use_manipulator")
     driver_arm_action_name = LaunchConfiguration("driver_arm_action_name")
     gripper_action_name = LaunchConfiguration("gripper_action_name")
     driver_gripper_action_name = LaunchConfiguration(
@@ -62,6 +73,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument("namespace", default_value=""),
             DeclareLaunchArgument("robot_id", default_value="1"),
             DeclareLaunchArgument("target_x", default_value="1.0"),
             DeclareLaunchArgument("target_y", default_value="0.0"),
@@ -96,6 +108,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("parking_front_axis", default_value="y"),
             DeclareLaunchArgument("front_normal_sign", default_value="-1.0"),
             DeclareLaunchArgument("desired_normal_distance", default_value="0.35"),
+            DeclareLaunchArgument("parking_lateral_offset", default_value="0.0"),
             DeclareLaunchArgument("pre_park_backoff", default_value="0.40"),
             DeclareLaunchArgument(
                 "parking_robot_safety_radius",
@@ -105,9 +118,17 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("front_clearance", default_value="0.35"),
             DeclareLaunchArgument("parking_safety_margin", default_value="0.10"),
             DeclareLaunchArgument("cushion_circle_spacing", default_value="0.20"),
+            DeclareLaunchArgument("cushion_obstacle_axis", default_value="local_x"),
+            DeclareLaunchArgument(
+                "cushion_obstacle_radius_override",
+                default_value="-1.0",
+            ),
             DeclareLaunchArgument("parking_lookahead_distance", default_value="0.25"),
             DeclareLaunchArgument("final_approach_speed", default_value="0.12"),
             DeclareLaunchArgument("final_approach_point_gain", default_value="0.35"),
+            DeclareLaunchArgument("align_gain", default_value="2.0"),
+            DeclareLaunchArgument("align_timeout_sec", default_value="8.0"),
+            DeclareLaunchArgument("final_yaw_tolerance", default_value="0.08"),
             DeclareLaunchArgument("visualization_frame", default_value="map"),
             DeclareLaunchArgument("rotations", default_value="1"),
             DeclareLaunchArgument("linear_speed", default_value="0.4"),
@@ -118,6 +139,10 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="30.0",
             ),
             DeclareLaunchArgument("spin_timeout_sec", default_value="15.0"),
+            DeclareLaunchArgument(
+                "use_manipulator",
+                default_value="false",
+            ),
             DeclareLaunchArgument(
                 "arm_action_name",
                 default_value="control_arm",
@@ -138,6 +163,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="hockey_controller",
                 executable="navigation_server",
                 name="navigation_server",
+                namespace=namespace,
                 output="screen",
                 parameters=[
                     {
@@ -149,6 +175,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="hockey_controller",
                 executable="safe_navigation_server",
                 name="safe_navigation_server",
+                namespace=namespace,
                 output="screen",
                 parameters=[
                     {
@@ -180,6 +207,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="hockey_controller",
                 executable="spin_server",
                 name="spin_server",
+                namespace=namespace,
                 output="screen",
                 parameters=[
                     {
@@ -191,7 +219,9 @@ def generate_launch_description() -> LaunchDescription:
                 package="hockey_controller",
                 executable="move_arm_server",
                 name="move_arm_server",
+                namespace=namespace,
                 output="screen",
+                condition=IfCondition(use_manipulator),
                 parameters=[
                     {
                         "action_name": arm_action_name,
@@ -203,7 +233,9 @@ def generate_launch_description() -> LaunchDescription:
                 package="hockey_controller",
                 executable="gripper_control_server",
                 name="gripper_control_server",
+                namespace=namespace,
                 output="screen",
+                condition=IfCondition(use_manipulator),
                 parameters=[
                     {
                         "action_name": gripper_action_name,
@@ -215,6 +247,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="hockey_controller",
                 executable="mission_manager",
                 name="mission_manager",
+                namespace=namespace,
                 output="screen",
                 parameters=[
                     {
@@ -233,15 +266,23 @@ def generate_launch_description() -> LaunchDescription:
                         "parking_front_axis": parking_front_axis,
                         "front_normal_sign": front_normal_sign,
                         "desired_normal_distance": desired_normal_distance,
+                        "parking_lateral_offset": parking_lateral_offset,
                         "pre_park_backoff": pre_park_backoff,
                         "parking_robot_safety_radius": parking_robot_safety_radius,
                         "side_clearance": side_clearance,
                         "front_clearance": front_clearance,
                         "parking_safety_margin": parking_safety_margin,
                         "cushion_circle_spacing": cushion_circle_spacing,
+                        "cushion_obstacle_axis": cushion_obstacle_axis,
+                        "cushion_obstacle_radius_override": (
+                            cushion_obstacle_radius_override
+                        ),
                         "parking_lookahead_distance": parking_lookahead_distance,
                         "final_approach_speed": final_approach_speed,
                         "final_approach_point_gain": final_approach_point_gain,
+                        "align_gain": align_gain,
+                        "align_timeout_sec": align_timeout_sec,
+                        "final_yaw_tolerance": final_yaw_tolerance,
                         "visualization_frame": visualization_frame,
                         "rotations": rotations,
                         "linear_speed": linear_speed,

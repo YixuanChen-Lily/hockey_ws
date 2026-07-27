@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 import rclpy
 from geometry_msgs.msg import Point, PoseStamped, Twist
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.msg import SetParametersResult
 from rcl_interfaces.srv import SetParameters
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -16,12 +17,18 @@ from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import ColorRGBA
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
-from visualization_msgs.msg import Marker, MarkerArray
+
+try:
+    from visualization_msgs.msg import Marker, MarkerArray
+except ImportError:
+    Marker = None
+    MarkerArray = None
 
 from hockey_interfaces.action import NavigateToPoint, Spin
 from hockey_controller.cushion_parking_planner import CushionGeometry
 from hockey_controller.cushion_parking_planner import ParkingPlannerConfig
 from hockey_controller.cushion_parking_planner import cushion_axes
+from hockey_controller.cushion_parking_planner import cushion_radius_layers
 from hockey_controller.cushion_parking_planner import plan_parking_route
 from hockey_controller.navigation_server import clamp
 from hockey_controller.navigation_server import wrap_to_pi
@@ -54,11 +61,14 @@ class MissionManager(Node):
         self.declare_parameter("front_clearance", 0.35)
         self.declare_parameter("desired_normal_distance", 0.35)
         self.declare_parameter("tangential_offset", 0.0)
+        self.declare_parameter("parking_lateral_offset", 0.0)
         self.declare_parameter("pre_park_backoff", 0.40)
         self.declare_parameter("parking_robot_safety_radius", 0.20)
         self.declare_parameter("stick_safety_extension", 0.0)
         self.declare_parameter("parking_safety_margin", 0.10)
         self.declare_parameter("cushion_circle_spacing", 0.20)
+        self.declare_parameter("cushion_obstacle_axis", "local_x")
+        self.declare_parameter("cushion_obstacle_radius_override", -1.0)
         self.declare_parameter("parking_lookahead_distance", 0.25)
         self.declare_parameter("final_approach_speed", 0.12)
         self.declare_parameter("final_approach_point_gain", 0.35)
@@ -131,7 +141,7 @@ class MissionManager(Node):
 
         self._status_publisher = self.create_publisher(
             String,
-            "/mission/status",
+            "mission/status",
             10,
         )
         self._cmd_vel_publisher = self.create_publisher(
@@ -139,11 +149,13 @@ class MissionManager(Node):
             self.cmd_vel_topic,
             10,
         )
-        self._parking_marker_publisher = self.create_publisher(
-            MarkerArray,
-            "/mission/parking_markers",
-            10,
-        )
+        self._parking_marker_publisher = None
+        if MarkerArray is not None:
+            self._parking_marker_publisher = self.create_publisher(
+                MarkerArray,
+                "mission/parking_markers",
+                10,
+            )
         self._pose_subscription = self.create_subscription(
             PoseStamped,
             self.pose_topic,
@@ -160,16 +172,17 @@ class MissionManager(Node):
         )
         self._start_service = self.create_service(
             Trigger,
-            "/mission/start",
+            "mission/start",
             self._handle_start,
             callback_group=self._callback_group,
         )
         self._stop_service = self.create_service(
             Trigger,
-            "/mission/stop",
+            "mission/stop",
             self._handle_stop,
             callback_group=self._callback_group,
         )
+        self.add_on_set_parameters_callback(self._handle_parameter_update)
         self._navigation_client = ActionClient(
             self,
             NavigateToPoint,
@@ -190,19 +203,48 @@ class MissionManager(Node):
         )
         self._safe_nav_parameter_client = self.create_client(
             SetParameters,
-            "/safe_navigation_server/set_parameters",
+            "safe_navigation_server/set_parameters",
             callback_group=self._callback_group,
         )
 
         self._publish_status("IDLE")
         self.get_logger().info(
-            "Mission manager ready. Call /mission/start.\n"
+            "Mission manager ready. Call mission/start in this node namespace.\n"
             f"  step1 action = {self.safe_navigation_action}\n"
             f"  step2 action = {self.spin_action}\n"
             f"  safe target  = "
             f"({self.safe_target_x:.2f}, {self.safe_target_y:.2f})\n"
             f"  parking     = {self.parking_enabled}\n"
             f"  rotations    = {self.rotations}"
+        )
+
+    def _handle_parameter_update(self, parameters) -> SetParametersResult:
+        for parameter in parameters:
+            if parameter.name == "cushion_pose_topic":
+                new_topic = str(parameter.value)
+                if not new_topic:
+                    new_topic = "/vrpn_mocap/hockey_sticks_1/pose"
+                self._reset_cushion_pose_subscription(new_topic)
+
+        return SetParametersResult(successful=True)
+
+    def _reset_cushion_pose_subscription(self, topic: str) -> None:
+        if topic == self.cushion_pose_topic:
+            return
+        self.destroy_subscription(self._cushion_pose_subscription)
+        with self._cushion_pose_lock:
+            self._latest_cushion_pose = None
+            self._latest_cushion_pose_time = None
+        self.cushion_pose_topic = topic
+        self._cushion_pose_subscription = self.create_subscription(
+            PoseStamped,
+            self.cushion_pose_topic,
+            self._cushion_pose_callback,
+            qos_profile_sensor_data,
+            callback_group=self._callback_group,
+        )
+        self.get_logger().info(
+            f"Updated cushion pose subscription: {self.cushion_pose_topic}"
         )
 
     def _handle_start(
@@ -301,6 +343,9 @@ class MissionManager(Node):
         self.tangential_offset = float(
             self.get_parameter("tangential_offset").value
         )
+        self.parking_lateral_offset = float(
+            self.get_parameter("parking_lateral_offset").value
+        )
         self.pre_park_backoff = float(
             self.get_parameter("pre_park_backoff").value
         )
@@ -315,6 +360,12 @@ class MissionManager(Node):
         )
         self.cushion_circle_spacing = float(
             self.get_parameter("cushion_circle_spacing").value
+        )
+        self.cushion_obstacle_axis = str(
+            self.get_parameter("cushion_obstacle_axis").value
+        )
+        self.cushion_obstacle_radius_override = float(
+            self.get_parameter("cushion_obstacle_radius_override").value
         )
         self.parking_lookahead_distance = float(
             self.get_parameter("parking_lookahead_distance").value
@@ -420,16 +471,25 @@ class MissionManager(Node):
             front_clearance=self.front_clearance,
             desired_normal_distance=self.desired_normal_distance,
             tangential_offset=self.tangential_offset,
+            parking_lateral_offset=self.parking_lateral_offset,
             pre_park_backoff=self.pre_park_backoff,
             robot_safety_radius=self.parking_robot_safety_radius,
             stick_safety_extension=self.stick_safety_extension,
             safety_margin=self.parking_safety_margin,
             circle_spacing=self.cushion_circle_spacing,
+            obstacle_axis=self.cushion_obstacle_axis,
+            obstacle_radius_override=self.cushion_obstacle_radius_override,
         )
         plan = plan_parking_route(
             (robot_pose[0], robot_pose[1]),
             geometry,
             config,
+        )
+        self.get_logger().info(
+            "Parking obstacle model: "
+            f"axis={self.cushion_obstacle_axis}, "
+            f"centers={[ (round(o.x, 3), round(o.y, 3)) for o in plan.cushion_obstacles ]}, "
+            f"radii={[ round(o.radius, 3) for o in plan.cushion_obstacles ]}"
         )
         self._publish_parking_markers(robot_pose, geometry, config, plan)
         if not plan.waypoints:
@@ -444,15 +504,16 @@ class MissionManager(Node):
         if not plan.already_front_side:
             self._publish_status("SELECT_BYPASS_SIDE")
             self.get_logger().info(f"Selected {plan.bypass_side} bypass route")
-            self._publish_status("GO_TO_BYPASS_WAYPOINT")
-            success, message = self._run_safe_navigation_to_point(
-                plan.waypoints[0][0],
-                plan.waypoints[0][1],
-                self.linear_speed,
-                self.safe_navigation_timeout_sec,
-            )
-            if self._parking_step_failed(success, message):
-                return
+            for waypoint in plan.waypoints[:-2]:
+                self._publish_status("GO_TO_BYPASS_WAYPOINT")
+                success, message = self._run_safe_navigation_to_point(
+                    waypoint[0],
+                    waypoint[1],
+                    self.linear_speed,
+                    self.safe_navigation_timeout_sec,
+                )
+                if self._parking_step_failed(success, message):
+                    return
         else:
             self.get_logger().info("Robot already on cushion parking side")
 
@@ -516,6 +577,14 @@ class MissionManager(Node):
         config: ParkingPlannerConfig,
         plan,
     ) -> None:
+        if Marker is None or MarkerArray is None:
+            self.get_logger().warning(
+                "visualization_msgs is unavailable; parking markers disabled"
+            )
+            return
+        if self._parking_marker_publisher is None:
+            return
+
         markers = MarkerArray()
         delete_marker = Marker()
         delete_marker.action = Marker.DELETEALL
@@ -537,18 +606,20 @@ class MissionManager(Node):
         )
         marker_id += 1
 
+        radius_layers = self._parking_radius_layers(geometry, config)
         for obstacle in plan.cushion_obstacles:
-            markers.markers.append(
-                self._circle_marker(
-                    marker_id,
-                    "cushion_cbf_radius",
-                    obstacle.x,
-                    obstacle.y,
-                    obstacle.radius,
-                    ColorRGBA(r=0.1, g=0.35, b=1.0, a=0.22),
+            for namespace, radius, color in radius_layers:
+                markers.markers.append(
+                    self._circle_marker(
+                        marker_id,
+                        namespace,
+                        obstacle.x,
+                        obstacle.y,
+                        radius,
+                        color,
+                    )
                 )
-            )
-            marker_id += 1
+                marker_id += 1
 
         markers.markers.append(
             self._circle_marker(
@@ -607,15 +678,16 @@ class MissionManager(Node):
             ("pre_park_point", plan.pre_park_point, ColorRGBA(r=1.0, g=0.65, b=0.0, a=0.95)),
             ("final_park_point", plan.final_park_point, ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.95)),
         ]
-        if not plan.already_front_side and plan.waypoints:
-            labeled_points.insert(
-                0,
-                (
-                    "bypass_waypoint",
-                    plan.waypoints[0],
-                    ColorRGBA(r=1.0, g=0.0, b=1.0, a=0.95),
-                ),
-            )
+        if not plan.already_front_side and len(plan.waypoints) > 2:
+            for index, waypoint in enumerate(reversed(plan.waypoints[:-2])):
+                labeled_points.insert(
+                    0,
+                    (
+                        f"bypass_waypoint_{len(plan.waypoints[:-2]) - index}",
+                        waypoint,
+                        ColorRGBA(r=1.0, g=0.0, b=1.0, a=0.95),
+                    ),
+                )
         for namespace, point, color in labeled_points:
             markers.markers.append(
                 self._sphere_marker(
@@ -644,6 +716,50 @@ class MissionManager(Node):
         )
 
         self._parking_marker_publisher.publish(markers)
+
+    def _parking_radius_layers(
+        self,
+        geometry: CushionGeometry,
+        config: ParkingPlannerConfig,
+    ):
+        physical, robot, stick, cbf = cushion_radius_layers(geometry, config)
+        layers = [
+            (
+                "cushion_cbf_radius",
+                cbf,
+                ColorRGBA(r=0.1, g=0.35, b=1.0, a=0.16),
+            )
+        ]
+        if stick > robot + 1e-9:
+            layers.append(
+                (
+                    "cushion_stick_inflated_radius",
+                    stick,
+                    ColorRGBA(r=0.45, g=0.15, b=1.0, a=0.18),
+                )
+            )
+        layers.extend(
+            [
+                (
+                    "cushion_robot_inflated_radius",
+                    robot,
+                    ColorRGBA(r=0.0, g=0.75, b=1.0, a=0.20),
+                ),
+                (
+                    "cushion_physical_radius",
+                    physical,
+                    ColorRGBA(r=0.9, g=0.55, b=0.05, a=0.26),
+                ),
+            ]
+        )
+        unique_layers = []
+        previous_radius = None
+        for namespace, radius, color in layers:
+            if previous_radius is not None and abs(radius - previous_radius) < 1e-9:
+                continue
+            unique_layers.append((namespace, radius, color))
+            previous_radius = radius
+        return unique_layers
 
     def _base_marker(self, marker_id: int, namespace: str, marker_type: int) -> Marker:
         marker = Marker()
@@ -822,6 +938,8 @@ class MissionManager(Node):
     def _align_to_yaw(self, target_yaw: float) -> bool:
         start_time = self.get_clock().now()
         rate_sec = 0.05
+        last_pose = None
+        last_yaw_error = None
         while rclpy.ok() and not self._is_stop_requested():
             pose = self._get_fresh_pose()
             if pose is None:
@@ -829,13 +947,25 @@ class MissionManager(Node):
                 self.get_logger().error("Align failed: stale robot pose")
                 return False
             yaw_error = wrap_to_pi(target_yaw - pose[2])
+            last_pose = pose
+            last_yaw_error = yaw_error
             if abs(yaw_error) <= self.final_yaw_tolerance:
                 self._stop_robot()
                 return True
             elapsed = (self.get_clock().now() - start_time).nanoseconds / 1e9
             if elapsed > self.align_timeout_sec:
                 self._stop_robot()
-                self.get_logger().error("Align failed: timeout")
+                if last_pose is None or last_yaw_error is None:
+                    self.get_logger().error("Align failed: timeout")
+                else:
+                    self.get_logger().error(
+                        "Align failed: timeout "
+                        f"target_yaw={target_yaw:.3f}, "
+                        f"current_yaw={last_pose[2]:.3f}, "
+                        f"yaw_error={last_yaw_error:.3f}, "
+                        f"tolerance={self.final_yaw_tolerance:.3f}, "
+                        f"cmd_vel={self.cmd_vel_topic}"
+                    )
                 return False
             twist = Twist()
             twist.angular.z = clamp(
