@@ -269,6 +269,13 @@ class SafeNavigationServer(Node):
                         reason="target_pose_timeout_sec must be positive",
                     )
 
+            if parameter.name == "target_pose_topic":
+                if parameter.type_ != Parameter.Type.STRING:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="target_pose_topic must be a string",
+                    )
+
             if parameter.name in (
                 "clf_gain",
                 "cbf_gain",
@@ -403,6 +410,11 @@ class SafeNavigationServer(Node):
                 self.heading_tolerance = float(parameter.value)
             elif parameter.name == "target_pose_timeout_sec":
                 self.target_pose_timeout_sec = float(parameter.value)
+            elif parameter.name == "target_pose_topic":
+                new_topic = str(parameter.value)
+                if not new_topic:
+                    new_topic = "/vrpn_mocap/hockey_sticks_1/pose"
+                self._reset_target_pose_subscription(new_topic)
             elif parameter.name == "target_offset_x":
                 self.target_offset_x = float(parameter.value)
             elif parameter.name == "target_offset_y":
@@ -415,6 +427,25 @@ class SafeNavigationServer(Node):
                 self.use_target_pose = bool(parameter.value)
 
         return SetParametersResult(successful=True)
+
+    def _reset_target_pose_subscription(self, topic: str) -> None:
+        if topic == self.target_pose_topic:
+            return
+        self.destroy_subscription(self._target_pose_subscription)
+        with self._target_pose_lock:
+            self._latest_target_pose = None
+            self._latest_target_pose_time = None
+        self.target_pose_topic = topic
+        self._target_pose_subscription = self.create_subscription(
+            PoseStamped,
+            self.target_pose_topic,
+            self._target_pose_callback,
+            qos_profile_sensor_data,
+            callback_group=self._callback_group,
+        )
+        self.get_logger().info(
+            f"Updated target pose subscription: {self.target_pose_topic}"
+        )
 
     def _validate_initial_parameters(self) -> None:
         positive_values = {
