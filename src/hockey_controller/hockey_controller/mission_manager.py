@@ -26,155 +26,98 @@ try:
 except ImportError:
     GripperControl = None
     MoveArm = None
+
 from hockey_controller.cushion_parking_planner import CushionGeometry
 from hockey_controller.cushion_parking_planner import ParkingPlannerConfig
 from hockey_controller.cushion_parking_planner import plan_parking_route
 from hockey_controller.navigation_server import clamp
+from hockey_controller.navigation_server import wrap_to_pi
+from hockey_controller.navigation_server import yaw_from_quaternion
 from hockey_controller.parking_markers import marker_array_type
 from hockey_controller.parking_markers import publish_parking_markers
 from hockey_controller.parking_markers import visualization_available
-from hockey_controller.navigation_server import wrap_to_pi
-from hockey_controller.navigation_server import yaw_from_quaternion
 
 
 class MissionManager(Node):
-    """Coordinate parking, stick pickup, navigation, and spinning tasks."""
+    """Coordinate parking, optional stick pickup, and fallback mission steps."""
+
+    PARAMETER_DEFAULTS = {
+        "navigation_action": "navigate_to_point",
+        "safe_navigation_action": "safe_navigate_to_point",
+        "spin_action": "spin",
+        "arm_action": "control_arm",
+        "gripper_action": "control_gripper",
+        "robot_id": 1,
+        "pose_topic": "",
+        "cushion_pose_topic": "",
+        "parking_enabled": True,
+        "target_x": 1.0,
+        "target_y": 0.0,
+        "safe_target_x": 1.0,
+        "safe_target_y": 0.0,
+        "cushion_length": 1.0,
+        "cushion_width": 0.12,
+        "parking_front_axis": "y",
+        "front_normal_sign": -1.0,
+        "front_side_threshold": 0.0,
+        "side_clearance": 0.35,
+        "front_clearance": 0.35,
+        "desired_normal_distance": 0.35,
+        "tangential_offset": 0.0,
+        "parking_lateral_offset": 0.0,
+        "pre_park_backoff": 0.40,
+        "parking_robot_safety_radius": 0.20,
+        "stick_safety_extension": 0.0,
+        "parking_safety_margin": 0.10,
+        "cushion_circle_spacing": 0.20,
+        "cushion_obstacle_axis": "local_x",
+        "cushion_obstacle_radius_override": -1.0,
+        "parking_lookahead_distance": 0.25,
+        "final_approach_speed": 0.12,
+        "final_approach_point_gain": 0.35,
+        "align_gain": 2.0,
+        "align_timeout_sec": 8.0,
+        "final_yaw_tolerance": 0.08,
+        "pose_timeout_sec": 1.0,
+        "visualization_frame": "map",
+        "rotations": 1,
+        "linear_speed": 0.4,
+        "angular_speed": 0.8,
+        "navigation_timeout_sec": 30.0,
+        "safe_navigation_timeout_sec": 30.0,
+        "spin_timeout_sec": 15.0,
+        "action_wait_timeout_sec": 5.0,
+        "stick_setup_enabled": False,
+        "grab_arm_x": 0.0,
+        "grab_arm_z": 0.0,
+        "grab_arm_relative": False,
+        "grab_arm_timeout_sec": 8.0,
+        "grab_arm_settle_sec": 0.3,
+        "gripper_close_power": 0.5,
+        "gripper_close_timeout_sec": 5.0,
+        "gripper_close_settle_sec": 0.5,
+        "lift_arm_x": 1.0,
+        "lift_arm_z": 2.0,
+        "lift_arm_relative": False,
+        "lift_arm_timeout_sec": 8.0,
+        "lift_arm_settle_sec": 0.3,
+        "backward_distance": 0.30,
+        "backward_duration_sec": 2.0,
+        "backward_publish_rate_hz": 20.0,
+        "backward_max_speed": 0.30,
+        "ready_arm_x": 0.0,
+        "ready_arm_z": 0.0,
+        "ready_arm_relative": False,
+        "ready_arm_timeout_sec": 8.0,
+        "ready_arm_settle_sec": 0.3,
+    }
 
     def __init__(self) -> None:
         super().__init__("mission_manager")
+        for name, default in self.PARAMETER_DEFAULTS.items():
+            self.declare_parameter(name, default)
 
-        self.declare_parameter("navigation_action", "navigate_to_point")
-        self.declare_parameter("safe_navigation_action", "safe_navigate_to_point")
-        self.declare_parameter("spin_action", "spin")
-        self.declare_parameter("arm_action", "control_arm")
-        self.declare_parameter("gripper_action", "control_gripper")
-        self.declare_parameter("robot_id", 1)
-        self.declare_parameter("pose_topic", "")
-        self.declare_parameter("cushion_pose_topic", "")
-        self.declare_parameter("parking_enabled", True)
-        self.declare_parameter("target_x", 1.0)
-        self.declare_parameter("target_y", 0.0)
-        self.declare_parameter("safe_target_x", 1.0)
-        self.declare_parameter("safe_target_y", 0.0)
-        self.declare_parameter("cushion_length", 1.0)
-        self.declare_parameter("cushion_width", 0.12)
-        self.declare_parameter("parking_front_axis", "y")
-        self.declare_parameter("front_normal_sign", -1.0)
-        self.declare_parameter("front_side_threshold", 0.0)
-        self.declare_parameter("side_clearance", 0.35)
-        self.declare_parameter("front_clearance", 0.35)
-        self.declare_parameter("desired_normal_distance", 0.35)
-        self.declare_parameter("tangential_offset", 0.0)
-        self.declare_parameter("parking_lateral_offset", 0.0)
-        self.declare_parameter("pre_park_backoff", 0.40)
-        self.declare_parameter("parking_robot_safety_radius", 0.20)
-        self.declare_parameter("stick_safety_extension", 0.0)
-        self.declare_parameter("parking_safety_margin", 0.10)
-        self.declare_parameter("cushion_circle_spacing", 0.20)
-        self.declare_parameter("cushion_obstacle_axis", "local_x")
-        self.declare_parameter("cushion_obstacle_radius_override", -1.0)
-        self.declare_parameter("parking_lookahead_distance", 0.25)
-        self.declare_parameter("final_approach_speed", 0.12)
-        self.declare_parameter("final_approach_point_gain", 0.35)
-        self.declare_parameter("align_gain", 2.0)
-        self.declare_parameter("align_timeout_sec", 8.0)
-        self.declare_parameter("final_yaw_tolerance", 0.08)
-        self.declare_parameter("pose_timeout_sec", 1.0)
-        self.declare_parameter("visualization_frame", "map")
-        self.declare_parameter("rotations", 1)
-        self.declare_parameter("linear_speed", 0.4)
-        self.declare_parameter("angular_speed", 0.8)
-        self.declare_parameter("navigation_timeout_sec", 30.0)
-        self.declare_parameter("safe_navigation_timeout_sec", 30.0)
-        self.declare_parameter("spin_timeout_sec", 15.0)
-        self.declare_parameter("action_wait_timeout_sec", 5.0)
-
-        # ================================================================
-        # Hockey-stick pickup and ready-position parameters.
-        #
-        # Keep this task disabled until all arm X/Z positions have been
-        # measured on the real robot. MoveArm uses the coordinate convention
-        # and units provided by the RoboMaster arm driver.
-        # ================================================================
-        self.declare_parameter("stick_setup_enabled", False)
-
-        # Step 1: move the arm end effector to the stick pickup position.
-        self.declare_parameter("grab_arm_x", 0.0)
-        self.declare_parameter("grab_arm_z", 0.0)
-        self.declare_parameter("grab_arm_relative", False)
-        self.declare_parameter("grab_arm_timeout_sec", 8.0)
-        self.declare_parameter("grab_arm_settle_sec", 0.3)
-
-        # Step 2: close the gripper and allow the stick to settle in it.
-        self.declare_parameter("gripper_close_power", 0.5)
-        self.declare_parameter("gripper_close_timeout_sec", 5.0)
-        self.declare_parameter("gripper_close_settle_sec", 0.5)
-
-        # Step 3: lift the captured stick clear of the floor/fixture.
-        self.declare_parameter("lift_arm_x", 1.0)
-        self.declare_parameter("lift_arm_z", 2.0)
-        self.declare_parameter("lift_arm_relative", False)
-        self.declare_parameter("lift_arm_timeout_sec", 8.0)
-        self.declare_parameter("lift_arm_settle_sec", 0.3)
-
-        # Step 4: open-loop reverse motion. The commanded linear velocity is
-        # -backward_distance / backward_duration_sec and is sent as Twist.
-        self.declare_parameter("backward_distance", 0.30)
-        self.declare_parameter("backward_duration_sec", 2.0)
-        self.declare_parameter("backward_publish_rate_hz", 20.0)
-        self.declare_parameter("backward_max_speed", 0.30)
-
-        # Step 5: lower the arm into the ready-to-hit end-effector position.
-        self.declare_parameter("ready_arm_x", 0.0)
-        self.declare_parameter("ready_arm_z", 0.0)
-        self.declare_parameter("ready_arm_relative", False)
-        self.declare_parameter("ready_arm_timeout_sec", 8.0)
-        self.declare_parameter("ready_arm_settle_sec", 0.3)
-
-        self.navigation_action = str(
-            self.get_parameter("navigation_action").value
-        )
-        self.safe_navigation_action = str(
-            self.get_parameter("safe_navigation_action").value
-        )
-        self.spin_action = str(self.get_parameter("spin_action").value)
-        self.arm_action = str(self.get_parameter("arm_action").value)
-        self.gripper_action = str(self.get_parameter("gripper_action").value)
-        self.robot_id = int(self.get_parameter("robot_id").value)
-        pose_topic = str(self.get_parameter("pose_topic").value)
-        cushion_pose_topic = str(self.get_parameter("cushion_pose_topic").value)
-        self.pose_topic = (
-            pose_topic
-            if pose_topic
-            else f"/vrpn_mocap/dji_robot_{self.robot_id}/pose"
-        )
-        self.cushion_pose_topic = (
-            cushion_pose_topic
-            if cushion_pose_topic
-            else "/vrpn_mocap/hockey_sticks_1/pose"
-        )
-        self.cmd_vel_topic = f"/robot{self.robot_id}/cmd_vel"
-        self.parking_enabled = bool(self.get_parameter("parking_enabled").value)
-        self.target_x = float(self.get_parameter("target_x").value)
-        self.target_y = float(self.get_parameter("target_y").value)
-        self.safe_target_x = float(self.get_parameter("safe_target_x").value)
-        self.safe_target_y = float(self.get_parameter("safe_target_y").value)
-        self._reload_parking_parameters()
-        self.rotations = int(self.get_parameter("rotations").value)
-        self.linear_speed = float(self.get_parameter("linear_speed").value)
-        self.angular_speed = float(self.get_parameter("angular_speed").value)
-        self.navigation_timeout_sec = float(
-            self.get_parameter("navigation_timeout_sec").value
-        )
-        self.safe_navigation_timeout_sec = float(
-            self.get_parameter("safe_navigation_timeout_sec").value
-        )
-        self.spin_timeout_sec = float(self.get_parameter("spin_timeout_sec").value)
-        self.action_wait_timeout_sec = float(
-            self.get_parameter("action_wait_timeout_sec").value
-        )
-        self._reload_stick_setup_parameters()
-
+        self._callback_group = ReentrantCallbackGroup()
         self._lock = Lock()
         self._running = False
         self._stop_requested = False
@@ -186,18 +129,14 @@ class MissionManager(Node):
         self._cushion_pose_lock = Lock()
         self._latest_cushion_pose: Optional[Tuple[float, float, float]] = None
         self._latest_cushion_pose_time = None
-        self._callback_group = ReentrantCallbackGroup()
 
-        self._status_publisher = self.create_publisher(
-            String,
-            "mission/status",
-            10,
-        )
-        self._cmd_vel_publisher = self.create_publisher(
-            Twist,
-            self.cmd_vel_topic,
-            10,
-        )
+        self._reload_parameters()
+        self.pose_topic = self._resolved_pose_topic()
+        self.cushion_pose_topic = self._resolved_cushion_pose_topic()
+        self.cmd_vel_topic = f"/robot{self.robot_id}/cmd_vel"
+
+        self._status_publisher = self.create_publisher(String, "mission/status", 10)
+        self._cmd_vel_publisher = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self._parking_marker_publisher = None
         if visualization_available():
             self._parking_marker_publisher = self.create_publisher(
@@ -205,6 +144,7 @@ class MissionManager(Node):
                 "mission/parking_markers",
                 10,
             )
+
         self._pose_subscription = self.create_subscription(
             PoseStamped,
             self.pose_topic,
@@ -232,6 +172,7 @@ class MissionManager(Node):
             callback_group=self._callback_group,
         )
         self.add_on_set_parameters_callback(self._handle_parameter_update)
+
         self._navigation_client = ActionClient(
             self,
             NavigateToPoint,
@@ -250,22 +191,26 @@ class MissionManager(Node):
             self.spin_action,
             callback_group=self._callback_group,
         )
-        self._arm_client = None
-        if MoveArm is not None:
-            self._arm_client = ActionClient(
+        self._arm_client = (
+            ActionClient(
                 self,
                 MoveArm,
                 self.arm_action,
                 callback_group=self._callback_group,
             )
-        self._gripper_client = None
-        if GripperControl is not None:
-            self._gripper_client = ActionClient(
+            if MoveArm is not None
+            else None
+        )
+        self._gripper_client = (
+            ActionClient(
                 self,
                 GripperControl,
                 self.gripper_action,
                 callback_group=self._callback_group,
             )
+            if GripperControl is not None
+            else None
+        )
         self._safe_nav_parameter_client = self.create_client(
             SetParameters,
             "safe_navigation_server/set_parameters",
@@ -275,23 +220,18 @@ class MissionManager(Node):
         self._publish_status("IDLE")
         self.get_logger().info(
             "Mission manager ready. Call mission/start in this node namespace.\n"
-            f"  step1 action = {self.safe_navigation_action}\n"
-            f"  step2 action = {self.spin_action}\n"
-            f"  safe target  = "
-            f"({self.safe_target_x:.2f}, {self.safe_target_y:.2f})\n"
-            f"  parking      = {self.parking_enabled}\n"
-            f"  stick setup  = {self.stick_setup_enabled}\n"
-            f"  rotations    = {self.rotations}"
+            f"  pose        = {self.pose_topic}\n"
+            f"  cushion     = {self.cushion_pose_topic}\n"
+            f"  safe action = {self.safe_navigation_action}\n"
+            f"  parking     = {self.parking_enabled}\n"
+            f"  stick setup = {self.stick_setup_enabled}"
         )
 
     def _handle_parameter_update(self, parameters) -> SetParametersResult:
         for parameter in parameters:
             if parameter.name == "cushion_pose_topic":
-                new_topic = str(parameter.value)
-                if not new_topic:
-                    new_topic = "/vrpn_mocap/hockey_sticks_1/pose"
-                self._reset_cushion_pose_subscription(new_topic)
-
+                topic = str(parameter.value) or "/vrpn_mocap/hockey_sticks_1/pose"
+                self._reset_cushion_pose_subscription(topic)
         return SetParametersResult(successful=True)
 
     def _reset_cushion_pose_subscription(self, topic: str) -> None:
@@ -309,9 +249,7 @@ class MissionManager(Node):
             qos_profile_sensor_data,
             callback_group=self._callback_group,
         )
-        self.get_logger().info(
-            f"Updated cushion pose subscription: {self.cushion_pose_topic}"
-        )
+        self.get_logger().info(f"Updated cushion pose subscription: {topic}")
 
     def _handle_start(
         self,
@@ -319,27 +257,22 @@ class MissionManager(Node):
         response: Trigger.Response,
     ) -> Trigger.Response:
         del request
-
         with self._lock:
             if self._running:
                 response.success = False
                 response.message = "Mission is already running"
                 return response
-
             self._reload_parameters()
-            parameters_valid, parameter_message = (
-                self._validate_stick_setup_parameters()
-            )
-            if not parameters_valid:
+            valid, message = self._validate_stick_setup_parameters()
+            if not valid:
                 response.success = False
-                response.message = parameter_message
+                response.message = message
                 return response
             self._stop_requested = False
             self._running = True
 
         self._worker = Thread(target=self._run_mission, daemon=True)
         self._worker.start()
-
         response.success = True
         response.message = "Mission started"
         return response
@@ -350,112 +283,40 @@ class MissionManager(Node):
         response: Trigger.Response,
     ) -> Trigger.Response:
         del request
-
         with self._lock:
             if not self._running:
                 response.success = False
                 response.message = "Mission is not running"
                 return response
-
             self._stop_requested = True
             active_goal_handle = self._active_goal_handle
 
         if active_goal_handle is not None:
             active_goal_handle.cancel_goal_async()
         self._stop_robot()
-
         self._publish_status("MISSION_STOPPING")
         response.success = True
         response.message = "Mission stop requested"
         return response
 
     def _reload_parameters(self) -> None:
-        self.navigation_action = str(
-            self.get_parameter("navigation_action").value
-        )
-        self.safe_navigation_action = str(
-            self.get_parameter("safe_navigation_action").value
-        )
-        self.spin_action = str(self.get_parameter("spin_action").value)
-        self.parking_enabled = bool(self.get_parameter("parking_enabled").value)
-        self.target_x = float(self.get_parameter("target_x").value)
-        self.target_y = float(self.get_parameter("target_y").value)
-        self.safe_target_x = float(self.get_parameter("safe_target_x").value)
-        self.safe_target_y = float(self.get_parameter("safe_target_y").value)
-        self._reload_parking_parameters()
-        self.rotations = int(self.get_parameter("rotations").value)
-        self.linear_speed = float(self.get_parameter("linear_speed").value)
-        self.angular_speed = float(self.get_parameter("angular_speed").value)
-        self.navigation_timeout_sec = float(
-            self.get_parameter("navigation_timeout_sec").value
-        )
-        self.safe_navigation_timeout_sec = float(
-            self.get_parameter("safe_navigation_timeout_sec").value
-        )
-        self.spin_timeout_sec = float(self.get_parameter("spin_timeout_sec").value)
-        self.action_wait_timeout_sec = float(
-            self.get_parameter("action_wait_timeout_sec").value
-        )
-        self._reload_stick_setup_parameters()
+        for name, default in self.PARAMETER_DEFAULTS.items():
+            value = self.get_parameter(name).value
+            if isinstance(default, bool):
+                value = bool(value)
+            elif isinstance(default, int) and not isinstance(default, bool):
+                value = int(value)
+            elif isinstance(default, float):
+                value = float(value)
+            elif isinstance(default, str):
+                value = str(value)
+            setattr(self, name, value)
 
-    def _reload_stick_setup_parameters(self) -> None:
-        self.stick_setup_enabled = bool(
-            self.get_parameter("stick_setup_enabled").value
-        )
-        self.grab_arm_x = float(self.get_parameter("grab_arm_x").value)
-        self.grab_arm_z = float(self.get_parameter("grab_arm_z").value)
-        self.grab_arm_relative = bool(
-            self.get_parameter("grab_arm_relative").value
-        )
-        self.grab_arm_timeout_sec = float(
-            self.get_parameter("grab_arm_timeout_sec").value
-        )
-        self.grab_arm_settle_sec = float(
-            self.get_parameter("grab_arm_settle_sec").value
-        )
-        self.gripper_close_power = float(
-            self.get_parameter("gripper_close_power").value
-        )
-        self.gripper_close_timeout_sec = float(
-            self.get_parameter("gripper_close_timeout_sec").value
-        )
-        self.gripper_close_settle_sec = float(
-            self.get_parameter("gripper_close_settle_sec").value
-        )
-        self.lift_arm_x = float(self.get_parameter("lift_arm_x").value)
-        self.lift_arm_z = float(self.get_parameter("lift_arm_z").value)
-        self.lift_arm_relative = bool(
-            self.get_parameter("lift_arm_relative").value
-        )
-        self.lift_arm_timeout_sec = float(
-            self.get_parameter("lift_arm_timeout_sec").value
-        )
-        self.lift_arm_settle_sec = float(
-            self.get_parameter("lift_arm_settle_sec").value
-        )
-        self.backward_distance = float(
-            self.get_parameter("backward_distance").value
-        )
-        self.backward_duration_sec = float(
-            self.get_parameter("backward_duration_sec").value
-        )
-        self.backward_publish_rate_hz = float(
-            self.get_parameter("backward_publish_rate_hz").value
-        )
-        self.backward_max_speed = float(
-            self.get_parameter("backward_max_speed").value
-        )
-        self.ready_arm_x = float(self.get_parameter("ready_arm_x").value)
-        self.ready_arm_z = float(self.get_parameter("ready_arm_z").value)
-        self.ready_arm_relative = bool(
-            self.get_parameter("ready_arm_relative").value
-        )
-        self.ready_arm_timeout_sec = float(
-            self.get_parameter("ready_arm_timeout_sec").value
-        )
-        self.ready_arm_settle_sec = float(
-            self.get_parameter("ready_arm_settle_sec").value
-        )
+    def _resolved_pose_topic(self) -> str:
+        return str(self.pose_topic) or f"/vrpn_mocap/dji_robot_{self.robot_id}/pose"
+
+    def _resolved_cushion_pose_topic(self) -> str:
+        return str(self.cushion_pose_topic) or "/vrpn_mocap/hockey_sticks_1/pose"
 
     def _validate_stick_setup_parameters(self) -> Tuple[bool, str]:
         if not self.stick_setup_enabled:
@@ -466,35 +327,8 @@ class MissionManager(Node):
                 "Stick setup requires MoveArm and GripperControl actions. "
                 "Rebuild hockey_interfaces first.",
             )
-
-        finite_values = {
-            "grab_arm_x": self.grab_arm_x,
-            "grab_arm_z": self.grab_arm_z,
-            "grab_arm_timeout_sec": self.grab_arm_timeout_sec,
-            "grab_arm_settle_sec": self.grab_arm_settle_sec,
-            "gripper_close_power": self.gripper_close_power,
-            "gripper_close_timeout_sec": self.gripper_close_timeout_sec,
-            "gripper_close_settle_sec": self.gripper_close_settle_sec,
-            "lift_arm_x": self.lift_arm_x,
-            "lift_arm_z": self.lift_arm_z,
-            "lift_arm_timeout_sec": self.lift_arm_timeout_sec,
-            "lift_arm_settle_sec": self.lift_arm_settle_sec,
-            "backward_distance": self.backward_distance,
-            "backward_duration_sec": self.backward_duration_sec,
-            "backward_publish_rate_hz": self.backward_publish_rate_hz,
-            "backward_max_speed": self.backward_max_speed,
-            "ready_arm_x": self.ready_arm_x,
-            "ready_arm_z": self.ready_arm_z,
-            "ready_arm_timeout_sec": self.ready_arm_timeout_sec,
-            "ready_arm_settle_sec": self.ready_arm_settle_sec,
-        }
-        for name, value in finite_values.items():
-            if not math.isfinite(value):
-                return (
-                    False,
-                    f"Invalid stick setup parameter: {name} is not finite",
-                )
-
+        if not 0.0 <= self.gripper_close_power <= 1.0:
+            return False, "gripper_close_power must be in [0, 1]"
         positive_values = {
             "grab_arm_timeout_sec": self.grab_arm_timeout_sec,
             "gripper_close_timeout_sec": self.gripper_close_timeout_sec,
@@ -507,165 +341,30 @@ class MissionManager(Node):
         }
         for name, value in positive_values.items():
             if value <= 0.0:
-                return (
-                    False,
-                    f"Invalid stick setup parameter: {name} must be > 0",
-                )
-
-        settle_values = {
-            "grab_arm_settle_sec": self.grab_arm_settle_sec,
-            "gripper_close_settle_sec": self.gripper_close_settle_sec,
-            "lift_arm_settle_sec": self.lift_arm_settle_sec,
-            "ready_arm_settle_sec": self.ready_arm_settle_sec,
-        }
-        for name, value in settle_values.items():
-            if value < 0.0:
-                return (
-                    False,
-                    f"Invalid stick setup parameter: {name} must be >= 0",
-                )
-
-        if not 0.0 <= self.gripper_close_power <= 1.0:
-            return False, "gripper_close_power must be in [0, 1]"
-
-        requested_speed = self.backward_distance / self.backward_duration_sec
-        if requested_speed > self.backward_max_speed:
-            return (
-                False,
-                "backward_distance / backward_duration_sec exceeds "
-                "backward_max_speed",
-            )
-
+                return False, f"{name} must be > 0"
+        speed = self.backward_distance / self.backward_duration_sec
+        if speed > self.backward_max_speed:
+            return False, "backward_distance / backward_duration_sec exceeds backward_max_speed"
         return True, "Stick setup parameters are valid"
-
-    def _reload_parking_parameters(self) -> None:
-        self.cushion_length = float(self.get_parameter("cushion_length").value)
-        self.cushion_width = float(self.get_parameter("cushion_width").value)
-        self.parking_front_axis = str(
-            self.get_parameter("parking_front_axis").value
-        )
-        self.front_normal_sign = float(
-            self.get_parameter("front_normal_sign").value
-        )
-        self.front_side_threshold = float(
-            self.get_parameter("front_side_threshold").value
-        )
-        self.side_clearance = float(self.get_parameter("side_clearance").value)
-        self.front_clearance = float(self.get_parameter("front_clearance").value)
-        self.desired_normal_distance = float(
-            self.get_parameter("desired_normal_distance").value
-        )
-        self.tangential_offset = float(
-            self.get_parameter("tangential_offset").value
-        )
-        self.parking_lateral_offset = float(
-            self.get_parameter("parking_lateral_offset").value
-        )
-        self.pre_park_backoff = float(
-            self.get_parameter("pre_park_backoff").value
-        )
-        self.parking_robot_safety_radius = float(
-            self.get_parameter("parking_robot_safety_radius").value
-        )
-        self.stick_safety_extension = float(
-            self.get_parameter("stick_safety_extension").value
-        )
-        self.parking_safety_margin = float(
-            self.get_parameter("parking_safety_margin").value
-        )
-        self.cushion_circle_spacing = float(
-            self.get_parameter("cushion_circle_spacing").value
-        )
-        self.cushion_obstacle_axis = str(
-            self.get_parameter("cushion_obstacle_axis").value
-        )
-        self.cushion_obstacle_radius_override = float(
-            self.get_parameter("cushion_obstacle_radius_override").value
-        )
-        self.parking_lookahead_distance = float(
-            self.get_parameter("parking_lookahead_distance").value
-        )
-        self.final_approach_speed = float(
-            self.get_parameter("final_approach_speed").value
-        )
-        self.final_approach_point_gain = float(
-            self.get_parameter("final_approach_point_gain").value
-        )
-        self.align_gain = float(self.get_parameter("align_gain").value)
-        self.align_timeout_sec = float(
-            self.get_parameter("align_timeout_sec").value
-        )
-        self.final_yaw_tolerance = float(
-            self.get_parameter("final_yaw_tolerance").value
-        )
-        self.pose_timeout_sec = float(self.get_parameter("pose_timeout_sec").value)
-        self.visualization_frame = str(
-            self.get_parameter("visualization_frame").value
-        )
 
     def _run_mission(self) -> None:
         try:
             if self.parking_enabled:
                 self._run_parking_mission()
-                return
-
-            self._publish_status("STEP1_SAFE_NAVIGATE")
-            if self._is_stop_requested():
-                self._publish_status("MISSION_STOPPED")
-                return
-
-            safe_navigation_success, safe_navigation_message = (
-                self._run_safe_navigation_step()
-            )
-            if self._is_stop_requested():
-                self._publish_status("MISSION_STOPPED")
-                return
-            if not safe_navigation_success:
-                self._publish_status("MISSION_FAILED")
-                self.get_logger().error(
-                    f"Step1 safe navigation failed: {safe_navigation_message}"
-                )
-                return
-
-            self.get_logger().info(
-                "Step1 safe navigation succeeded. Transitioning to step2 spin."
-            )
-
-            self._publish_status("STEP2_SPIN")
-            if self._is_stop_requested():
-                self._publish_status("MISSION_STOPPED")
-                return
-
-            spin_success, spin_message = self._run_spin_step()
-            if self._is_stop_requested():
-                self._publish_status("MISSION_STOPPED")
-                return
-            if not spin_success:
-                self._publish_status("MISSION_FAILED")
-                self.get_logger().error(f"Step2 spin failed: {spin_message}")
-                return
-
-            self._publish_status("MISSION_DONE")
-            self.get_logger().info("Mission completed successfully.")
-
+            else:
+                self._run_navigation_and_spin_mission()
         except Exception as exception:
             self._publish_status("MISSION_FAILED")
             self.get_logger().error(f"Mission exception: {exception}")
-
         finally:
+            self._stop_robot()
             with self._lock:
                 self._running = False
                 self._stop_requested = False
                 self._active_goal_handle = None
 
-    def _is_stop_requested(self) -> bool:
-        with self._lock:
-            return self._stop_requested
-
     def _run_parking_mission(self) -> None:
         self._publish_status("STEP1_PARKING")
-        self.get_logger().info("Step1 parking started.")
-        self._publish_status("STEP1_CHECK_CUSHION_SIDE")
         robot_pose = self._get_fresh_pose()
         cushion_pose = self._get_fresh_cushion_pose()
         if robot_pose is None or cushion_pose is None:
@@ -697,11 +396,62 @@ class MissionManager(Node):
             obstacle_axis=self.cushion_obstacle_axis,
             obstacle_radius_override=self.cushion_obstacle_radius_override,
         )
-        plan = plan_parking_route(
-            (robot_pose[0], robot_pose[1]),
-            geometry,
-            config,
-        )
+        plan = plan_parking_route((robot_pose[0], robot_pose[1]), geometry, config)
+        self._publish_parking_plan(robot_pose, geometry, config, plan)
+        if not plan.waypoints:
+            self._publish_status("MISSION_FAILED")
+            self.get_logger().error(f"Parking planning failed: {plan.message}")
+            return
+        if not self._configure_safe_navigation_for_parking(plan):
+            self._publish_status("MISSION_FAILED")
+            return
+
+        if not plan.already_front_side:
+            self.get_logger().info(f"Selected {plan.bypass_side} bypass route")
+            for waypoint in plan.waypoints[:-2]:
+                self._publish_status("STEP1_GO_TO_BYPASS_WAYPOINT")
+                if self._parking_step_failed(
+                    self._navigate_safe(waypoint, self.linear_speed)
+                ):
+                    return
+        else:
+            self.get_logger().info("Robot already on cushion parking side")
+
+        self._publish_status("STEP1_GO_TO_PRE_PARK_POINT")
+        if self._parking_step_failed(
+            self._navigate_safe(plan.pre_park_point, self.linear_speed)
+        ):
+            return
+
+        self._publish_status("STEP1_ALIGN_FOR_FINAL_APPROACH")
+        if not self._align_to_yaw(plan.final_yaw):
+            self._publish_status("MISSION_FAILED")
+            return
+
+        self._publish_status("STEP1_FINAL_APPROACH")
+        self._set_safe_nav_parameters({"point_gain": self.final_approach_point_gain})
+        final_goal = self._control_point_goal(plan.final_park_point, plan.final_yaw)
+        if self._parking_step_failed(
+            self._navigate_safe(final_goal, self.final_approach_speed)
+        ):
+            return
+        if not self._align_to_yaw(plan.final_yaw):
+            self._publish_status("MISSION_FAILED")
+            return
+
+        self._publish_status("STEP1_PARKING_DONE")
+        stick_success, stick_message = self._run_stick_setup_mission()
+        if self._is_stop_requested():
+            self._publish_status("MISSION_STOPPED")
+            return
+        if not stick_success:
+            self._publish_status("MISSION_FAILED")
+            self.get_logger().error(f"Stick setup failed: {stick_message}")
+            return
+        self._publish_status("MISSION_DONE")
+        self.get_logger().info("Mission completed successfully.")
+
+    def _publish_parking_plan(self, robot_pose, geometry, config, plan) -> None:
         self.get_logger().info(
             "Parking obstacle model: "
             f"axis={self.cushion_obstacle_axis}, "
@@ -717,140 +467,55 @@ class MissionManager(Node):
             config,
             plan,
         )
-        if not plan.waypoints:
-            self._publish_status("FAILED")
-            self.get_logger().error(f"Parking planning failed: {plan.message}")
+
+    def _run_navigation_and_spin_mission(self) -> None:
+        success, message = self._run_navigation_step()
+        if self._parking_step_failed((success, message)):
             return
-
-        if not self._configure_safe_navigation_for_parking(plan):
-            self._publish_status("FAILED")
+        success, message = self._run_spin_step()
+        if self._parking_step_failed((success, message)):
             return
-
-        if not plan.already_front_side:
-            self._publish_status("STEP1_SELECT_BYPASS_SIDE")
-            self.get_logger().info(f"Selected {plan.bypass_side} bypass route")
-            for waypoint in plan.waypoints[:-2]:
-                self._publish_status("STEP1_GO_TO_BYPASS_WAYPOINT")
-                success, message = self._run_safe_navigation_to_point(
-                    waypoint[0],
-                    waypoint[1],
-                    self.linear_speed,
-                    self.safe_navigation_timeout_sec,
-                )
-                if self._parking_step_failed(success, message):
-                    return
-        else:
-            self.get_logger().info("Robot already on cushion parking side")
-
-        self._publish_status("STEP1_GO_TO_PRE_PARK_POINT")
-        success, message = self._run_safe_navigation_to_point(
-            plan.pre_park_point[0],
-            plan.pre_park_point[1],
-            self.linear_speed,
-            self.safe_navigation_timeout_sec,
-        )
-        if self._parking_step_failed(success, message):
-            return
-
-        self._publish_status("STEP1_ALIGN_FOR_FINAL_APPROACH")
-        if not self._align_to_yaw(plan.final_yaw):
-            self._publish_status("FAILED")
-            return
-
-        self._publish_status("STEP1_FINAL_APPROACH")
-        self._set_safe_nav_parameters(
-            {
-                "point_gain": self.final_approach_point_gain,
-            }
-        )
-        final_point = self._control_point_goal_for_robot_pose(
-            plan.final_park_point,
-            plan.final_yaw,
-        )
-        success, message = self._run_safe_navigation_to_point(
-            final_point[0],
-            final_point[1],
-            self.final_approach_speed,
-            self.safe_navigation_timeout_sec,
-        )
-        if self._parking_step_failed(success, message):
-            return
-
-        if not self._align_to_yaw(plan.final_yaw):
-            self._publish_status("FAILED")
-            return
-
-        self._publish_status("STEP1_PARKING_DONE")
-        self.get_logger().info(
-            "Step1 parking succeeded. Transitioning to step2 stick pickup."
-        )
-        self._publish_status("STEP2_PICK_UP_STICK")
-
-        stick_success, stick_message = self._run_stick_setup_mission()
-        if self._is_stop_requested():
-            self._publish_status("MISSION_STOPPED")
-            return
-        if not stick_success:
-            self._publish_status("STEP2_PICK_UP_STICK_FAILED")
-            self.get_logger().error(f"Step2 stick pickup failed: {stick_message}")
-            return
-
         self._publish_status("MISSION_DONE")
-        self.get_logger().info("Mission completed successfully: parking and stick pickup finished.")
 
     def _run_stick_setup_mission(self) -> Tuple[bool, str]:
-        """Pick up the hockey stick and place the arm in its ready pose."""
         if not self.stick_setup_enabled:
             self._publish_status("STEP2_PICK_UP_STICK_SKIPPED")
-            self.get_logger().warning(
-                "Step2 stick pickup is disabled; set stick_setup_enabled=true "
-                "after calibrating the arm positions."
-            )
+            self.get_logger().warning("Stick setup disabled.")
             return True, "Stick setup disabled"
 
-        success, message = self._run_arm_step(
-            "STEP2_MOVE_ARM_TO_GRAB",
-            self.grab_arm_x,
-            self.grab_arm_z,
-            self.grab_arm_relative,
-            self.grab_arm_timeout_sec,
-            self.grab_arm_settle_sec,
+        steps = (
+            lambda: self._run_arm_step(
+                "STEP2_MOVE_ARM_TO_GRAB",
+                self.grab_arm_x,
+                self.grab_arm_z,
+                self.grab_arm_relative,
+                self.grab_arm_timeout_sec,
+                self.grab_arm_settle_sec,
+            ),
+            self._run_gripper_close_step,
+            lambda: self._run_arm_step(
+                "STEP2_LIFT_HOCKEY_STICK",
+                self.lift_arm_x,
+                self.lift_arm_z,
+                self.lift_arm_relative,
+                self.lift_arm_timeout_sec,
+                self.lift_arm_settle_sec,
+            ),
+            self._run_backward_step,
+            lambda: self._run_arm_step(
+                "STEP2_LOWER_ARM_TO_READY",
+                self.ready_arm_x,
+                self.ready_arm_z,
+                self.ready_arm_relative,
+                self.ready_arm_timeout_sec,
+                self.ready_arm_settle_sec,
+            ),
         )
-        if not success:
-            return False, f"Move arm to grab position: {message}"
-
-        success, message = self._run_gripper_close_step()
-        if not success:
-            return False, f"Close gripper: {message}"
-
-        success, message = self._run_arm_step(
-            "STEP2_LIFT_HOCKEY_STICK",
-            self.lift_arm_x,
-            self.lift_arm_z,
-            self.lift_arm_relative,
-            self.lift_arm_timeout_sec,
-            self.lift_arm_settle_sec,
-        )
-        if not success:
-            return False, f"Lift hockey stick: {message}"
-
-        success, message = self._run_backward_step()
-        if not success:
-            return False, f"Back up with hockey stick: {message}"
-
-        success, message = self._run_arm_step(
-            "STEP2_LOWER_ARM_TO_READY",
-            self.ready_arm_x,
-            self.ready_arm_z,
-            self.ready_arm_relative,
-            self.ready_arm_timeout_sec,
-            self.ready_arm_settle_sec,
-        )
-        if not success:
-            return False, f"Lower arm to ready position: {message}"
-
+        for step in steps:
+            success, message = step()
+            if not success:
+                return False, message
         self._publish_status("STEP2_STICK_READY")
-        self.get_logger().info("Hockey stick is in the ready-to-hit position.")
         return True, "Hockey stick setup completed"
 
     def _run_arm_step(
@@ -867,9 +532,7 @@ class MissionManager(Node):
             return False, "Mission stop requested"
         if self._arm_client is None or MoveArm is None:
             return False, "MoveArm action type is unavailable"
-        if not self._arm_client.wait_for_server(
-            timeout_sec=self.action_wait_timeout_sec
-        ):
+        if not self._arm_client.wait_for_server(timeout_sec=self.action_wait_timeout_sec):
             return False, f"Action server unavailable: {self.arm_action}"
 
         goal = MoveArm.Goal()
@@ -894,9 +557,7 @@ class MissionManager(Node):
             return False, "Mission stop requested"
         if self._gripper_client is None or GripperControl is None:
             return False, "GripperControl action type is unavailable"
-        if not self._gripper_client.wait_for_server(
-            timeout_sec=self.action_wait_timeout_sec
-        ):
+        if not self._gripper_client.wait_for_server(timeout_sec=self.action_wait_timeout_sec):
             return False, f"Action server unavailable: {self.gripper_action}"
 
         goal = GripperControl.Goal()
@@ -916,38 +577,19 @@ class MissionManager(Node):
 
     def _run_backward_step(self) -> Tuple[bool, str]:
         self._publish_status("STEP2_BACK_UP_WITH_STICK")
-        if self._is_stop_requested():
-            return False, "Mission stop requested"
-
-        backward_speed = -self.backward_distance / self.backward_duration_sec
+        speed = -self.backward_distance / self.backward_duration_sec
         period_sec = 1.0 / self.backward_publish_rate_hz
         twist = Twist()
-        twist.linear.x = backward_speed
+        twist.linear.x = speed
         start_time = monotonic()
-
-        self.get_logger().info(
-            "Backing up with hockey stick: "
-            f"distance={self.backward_distance:.3f}, "
-            f"duration={self.backward_duration_sec:.3f}, "
-            f"speed={backward_speed:.3f}"
-        )
         try:
-            while (
-                rclpy.ok()
-                and monotonic() - start_time < self.backward_duration_sec
-            ):
+            while rclpy.ok() and monotonic() - start_time < self.backward_duration_sec:
                 if self._is_stop_requested():
-                    return (
-                        False,
-                        "Mission stop requested during reverse motion",
-                    )
+                    return False, "Mission stop requested during reverse motion"
                 self._cmd_vel_publisher.publish(twist)
                 Event().wait(period_sec)
         finally:
             self._stop_robot()
-
-        if not rclpy.ok():
-            return False, "ROS shutdown interrupted reverse motion"
         return True, "Reverse motion completed"
 
     def _interruptible_wait(self, duration_sec: float) -> bool:
@@ -958,25 +600,7 @@ class MissionManager(Node):
             Event().wait(min(0.05, max(0.0, end_time - monotonic())))
         return rclpy.ok() and not self._is_stop_requested()
 
-    def _control_point_goal_for_robot_pose(
-        self,
-        robot_position: Tuple[float, float],
-        robot_yaw: float,
-    ) -> Tuple[float, float]:
-        return (
-            robot_position[0]
-            + self.parking_lookahead_distance * math.cos(robot_yaw),
-            robot_position[1]
-            + self.parking_lookahead_distance * math.sin(robot_yaw),
-        )
-
-    def _configure_safe_navigation_for_parking(
-        self,
-        plan,
-    ) -> bool:
-        obstacle_x = [obstacle.x for obstacle in plan.cushion_obstacles]
-        obstacle_y = [obstacle.y for obstacle in plan.cushion_obstacles]
-        obstacle_radius = [obstacle.radius for obstacle in plan.cushion_obstacles]
+    def _configure_safe_navigation_for_parking(self, plan) -> bool:
         return self._set_safe_nav_parameters(
             {
                 "use_target_pose": False,
@@ -984,55 +608,44 @@ class MissionManager(Node):
                 "obstacles_enabled": True,
                 "robot_safety_radius": 0.0,
                 "obstacle_safe_margin": 0.0,
-                "obstacle_x": obstacle_x,
-                "obstacle_y": obstacle_y,
-                "obstacle_radius": obstacle_radius,
+                "obstacle_x": [obstacle.x for obstacle in plan.cushion_obstacles],
+                "obstacle_y": [obstacle.y for obstacle in plan.cushion_obstacles],
+                "obstacle_radius": [
+                    obstacle.radius for obstacle in plan.cushion_obstacles
+                ],
             }
         )
 
-    def _parking_step_failed(self, success: bool, message: str) -> bool:
-        if self._is_stop_requested():
-            self._publish_status("MISSION_STOPPED")
-            return True
-        if success:
-            return False
-        self._publish_status("FAILED")
-        self.get_logger().error(f"Parking step failed: {message}")
-        return True
-
-    def _run_safe_navigation_to_point(
-        self,
-        target_x: float,
-        target_y: float,
-        linear_speed: float,
-        timeout_sec: float,
-    ) -> Tuple[bool, str]:
+    def _navigate_safe(self, point, speed: float) -> Tuple[bool, str]:
+        goal = NavigateToPoint.Goal()
+        goal.target_x = float(point[0])
+        goal.target_y = float(point[1])
+        goal.linear_speed = float(speed)
+        goal.angular_speed = self.angular_speed
+        goal.timeout_sec = self.safe_navigation_timeout_sec
         if not self._safe_navigation_client.wait_for_server(
             timeout_sec=self.action_wait_timeout_sec
         ):
-            return (
-                False,
-                f"Action server unavailable: {self.safe_navigation_action}",
-            )
-
-        goal = NavigateToPoint.Goal()
-        goal.target_x = float(target_x)
-        goal.target_y = float(target_y)
-        goal.linear_speed = float(linear_speed)
-        goal.angular_speed = self.angular_speed
-        goal.timeout_sec = float(timeout_sec)
-
+            return False, f"Action server unavailable: {self.safe_navigation_action}"
         return self._send_goal_and_wait(
             self._safe_navigation_client,
             goal,
             self._handle_safe_navigation_feedback,
         )
 
+    def _parking_step_failed(self, result: Tuple[bool, str]) -> bool:
+        success, message = result
+        if self._is_stop_requested():
+            self._publish_status("MISSION_STOPPED")
+            return True
+        if success:
+            return False
+        self._publish_status("MISSION_FAILED")
+        self.get_logger().error(f"Parking step failed: {message}")
+        return True
+
     def _align_to_yaw(self, target_yaw: float) -> bool:
         start_time = self.get_clock().now()
-        rate_sec = 0.05
-        last_pose = None
-        last_yaw_error = None
         while rclpy.ok() and not self._is_stop_requested():
             pose = self._get_fresh_pose()
             if pose is None:
@@ -1040,25 +653,20 @@ class MissionManager(Node):
                 self.get_logger().error("Align failed: stale robot pose")
                 return False
             yaw_error = wrap_to_pi(target_yaw - pose[2])
-            last_pose = pose
-            last_yaw_error = yaw_error
             if abs(yaw_error) <= self.final_yaw_tolerance:
                 self._stop_robot()
                 return True
             elapsed = (self.get_clock().now() - start_time).nanoseconds / 1e9
             if elapsed > self.align_timeout_sec:
                 self._stop_robot()
-                if last_pose is None or last_yaw_error is None:
-                    self.get_logger().error("Align failed: timeout")
-                else:
-                    self.get_logger().error(
-                        "Align failed: timeout "
-                        f"target_yaw={target_yaw:.3f}, "
-                        f"current_yaw={last_pose[2]:.3f}, "
-                        f"yaw_error={last_yaw_error:.3f}, "
-                        f"tolerance={self.final_yaw_tolerance:.3f}, "
-                        f"cmd_vel={self.cmd_vel_topic}"
-                    )
+                self.get_logger().error(
+                    "Align failed: timeout "
+                    f"target_yaw={target_yaw:.3f}, "
+                    f"current_yaw={pose[2]:.3f}, "
+                    f"yaw_error={yaw_error:.3f}, "
+                    f"tolerance={self.final_yaw_tolerance:.3f}, "
+                    f"cmd_vel={self.cmd_vel_topic}"
+                )
                 return False
             twist = Twist()
             twist.angular.z = clamp(
@@ -1067,9 +675,15 @@ class MissionManager(Node):
                 self.angular_speed,
             )
             self._cmd_vel_publisher.publish(twist)
-            Event().wait(rate_sec)
+            Event().wait(0.05)
         self._stop_robot()
         return False
+
+    def _control_point_goal(self, position, yaw: float) -> Tuple[float, float]:
+        return (
+            position[0] + self.parking_lookahead_distance * math.cos(yaw),
+            position[1] + self.parking_lookahead_distance * math.sin(yaw),
+        )
 
     def _set_safe_nav_parameters(self, values) -> bool:
         if not self._safe_nav_parameter_client.wait_for_service(
@@ -1077,7 +691,6 @@ class MissionManager(Node):
         ):
             self.get_logger().error("safe_navigation_server parameter service unavailable")
             return False
-
         request = SetParameters.Request()
         request.parameters = [
             self._parameter_message(name, value)
@@ -1104,12 +717,12 @@ class MissionManager(Node):
         if isinstance(value, bool):
             parameter.value.type = ParameterType.PARAMETER_BOOL
             parameter.value.bool_value = value
+        elif isinstance(value, int) and not isinstance(value, bool):
+            parameter.value.type = ParameterType.PARAMETER_INTEGER
+            parameter.value.integer_value = value
         elif isinstance(value, float):
             parameter.value.type = ParameterType.PARAMETER_DOUBLE
             parameter.value.double_value = value
-        elif isinstance(value, int):
-            parameter.value.type = ParameterType.PARAMETER_INTEGER
-            parameter.value.integer_value = value
         elif isinstance(value, str):
             parameter.value.type = ParameterType.PARAMETER_STRING
             parameter.value.string_value = value
@@ -1119,57 +732,29 @@ class MissionManager(Node):
         return parameter
 
     def _run_navigation_step(self) -> Tuple[bool, str]:
-        if not self._navigation_client.wait_for_server(
-            timeout_sec=self.action_wait_timeout_sec
-        ):
-            return False, f"Action server unavailable: {self.navigation_action}"
-
         goal = NavigateToPoint.Goal()
         goal.target_x = self.target_x
         goal.target_y = self.target_y
         goal.linear_speed = self.linear_speed
         goal.angular_speed = self.angular_speed
         goal.timeout_sec = self.navigation_timeout_sec
-
+        if not self._navigation_client.wait_for_server(
+            timeout_sec=self.action_wait_timeout_sec
+        ):
+            return False, f"Action server unavailable: {self.navigation_action}"
         return self._send_goal_and_wait(
             self._navigation_client,
             goal,
             self._handle_navigation_feedback,
         )
 
-    def _run_safe_navigation_step(self) -> Tuple[bool, str]:
-        if not self._safe_navigation_client.wait_for_server(
-            timeout_sec=self.action_wait_timeout_sec
-        ):
-            return (
-                False,
-                f"Action server unavailable: {self.safe_navigation_action}",
-            )
-
-        goal = NavigateToPoint.Goal()
-        goal.target_x = self.safe_target_x
-        goal.target_y = self.safe_target_y
-        goal.linear_speed = self.linear_speed
-        goal.angular_speed = self.angular_speed
-        goal.timeout_sec = self.safe_navigation_timeout_sec
-
-        return self._send_goal_and_wait(
-            self._safe_navigation_client,
-            goal,
-            self._handle_safe_navigation_feedback,
-        )
-
     def _run_spin_step(self) -> Tuple[bool, str]:
-        if not self._spin_client.wait_for_server(
-            timeout_sec=self.action_wait_timeout_sec
-        ):
-            return False, f"Action server unavailable: {self.spin_action}"
-
         goal = Spin.Goal()
         goal.rotations = self.rotations
         goal.angular_speed = self.angular_speed
         goal.timeout_sec = self.spin_timeout_sec
-
+        if not self._spin_client.wait_for_server(timeout_sec=self.action_wait_timeout_sec):
+            return False, f"Action server unavailable: {self.spin_action}"
         return self._send_goal_and_wait(
             self._spin_client,
             goal,
@@ -1186,10 +771,7 @@ class MissionManager(Node):
         done_event = Event()
         abandoned_event = Event()
         goal_handle_holder = {"handle": None}
-        result_holder = {
-            "success": False,
-            "message": "Action did not finish",
-        }
+        result_holder = {"success": False, "message": "Action did not finish"}
 
         def handle_goal_response(future) -> None:
             try:
@@ -1202,25 +784,19 @@ class MissionManager(Node):
                 result_holder["message"] = "Goal rejected"
                 done_event.set()
                 return
-
             if abandoned_event.is_set():
                 goal_handle.cancel_goal_async()
                 return
-
             goal_handle_holder["handle"] = goal_handle
             with self._lock:
                 self._active_goal_handle = goal_handle
-
             if self._is_stop_requested():
                 goal_handle.cancel_goal_async()
-
-            result_future = goal_handle.get_result_async()
-            result_future.add_done_callback(handle_result)
+            goal_handle.get_result_async().add_done_callback(handle_result)
 
         def handle_result(future) -> None:
             try:
-                result_wrapper = future.result()
-                result = result_wrapper.result
+                result = future.result().result
                 result_holder["success"] = bool(result.success)
                 result_holder["message"] = str(result.message)
             except Exception as exception:
@@ -1231,76 +807,60 @@ class MissionManager(Node):
             done_event.set()
 
         try:
-            send_future = client.send_goal_async(
+            client.send_goal_async(
                 goal,
                 feedback_callback=feedback_callback,
-            )
+            ).add_done_callback(handle_goal_response)
         except Exception as exception:
             return False, f"Failed to send action goal: {exception}"
-        send_future.add_done_callback(handle_goal_response)
+
         start_time = monotonic()
         while not done_event.wait(timeout=0.05):
             if self._is_stop_requested():
                 abandoned_event.set()
-                with self._lock:
-                    active_goal_handle = self._active_goal_handle
-                    self._active_goal_handle = None
-                if active_goal_handle is not None:
-                    active_goal_handle.cancel_goal_async()
+                self._cancel_active_goal()
                 return False, "Mission stop requested"
-
-            if (
-                timeout_sec is not None
-                and monotonic() - start_time >= timeout_sec
-            ):
+            if timeout_sec is not None and monotonic() - start_time >= timeout_sec:
                 abandoned_event.set()
-                with self._lock:
-                    active_goal_handle = self._active_goal_handle
-                    self._active_goal_handle = None
-                if active_goal_handle is not None:
-                    active_goal_handle.cancel_goal_async()
-                return (
-                    False,
-                    f"Action timed out after {timeout_sec:.2f} seconds",
-                )
-
+                self._cancel_active_goal()
+                return False, f"Action timed out after {timeout_sec:.2f} seconds"
         return bool(result_holder["success"]), str(result_holder["message"])
+
+    def _cancel_active_goal(self) -> None:
+        with self._lock:
+            active_goal_handle = self._active_goal_handle
+            self._active_goal_handle = None
+        if active_goal_handle is not None:
+            active_goal_handle.cancel_goal_async()
 
     def _handle_navigation_feedback(self, feedback_message) -> None:
         feedback = feedback_message.feedback
         self.get_logger().info(
-            "Step1 feedback: "
-            f"{feedback.state}, "
+            f"Step1 feedback: {feedback.state}, "
             f"distance={feedback.distance_remaining:.2f}"
         )
 
     def _handle_safe_navigation_feedback(self, feedback_message) -> None:
         feedback = feedback_message.feedback
         self.get_logger().info(
-            "Step1 feedback: "
-            f"{feedback.state}, "
+            f"Step1 feedback: {feedback.state}, "
             f"distance={feedback.distance_remaining:.2f}"
         )
 
     def _handle_spin_feedback(self, feedback_message) -> None:
         feedback = feedback_message.feedback
         self.get_logger().info(
-            "Step2 feedback: "
-            f"{feedback.state}, "
+            f"Step2 feedback: {feedback.state}, "
             f"rotation_remaining={feedback.rotation_remaining:.2f}"
         )
 
     def _handle_arm_feedback(self, feedback_message) -> None:
         feedback = feedback_message.feedback
-        self.get_logger().info(
-            f"Arm action progress={feedback.progress:.2f}"
-        )
+        self.get_logger().info(f"Arm action progress={feedback.progress:.2f}")
 
     def _handle_gripper_feedback(self, feedback_message) -> None:
         feedback = feedback_message.feedback
-        self.get_logger().info(
-            f"Gripper current state={feedback.current_state}"
-        )
+        self.get_logger().info(f"Gripper current state={feedback.current_state}")
 
     def _pose_callback(self, message: PoseStamped) -> None:
         pose = message.pose
@@ -1329,9 +889,7 @@ class MissionManager(Node):
         if pose is None or pose_time is None:
             return None
         pose_age = (self.get_clock().now() - pose_time).nanoseconds / 1e9
-        if pose_age > self.pose_timeout_sec:
-            return None
-        return pose
+        return None if pose_age > self.pose_timeout_sec else pose
 
     def _get_fresh_cushion_pose(self) -> Optional[Tuple[float, float, float]]:
         with self._cushion_pose_lock:
@@ -1340,17 +898,17 @@ class MissionManager(Node):
         if pose is None or pose_time is None:
             return None
         pose_age = (self.get_clock().now() - pose_time).nanoseconds / 1e9
-        if pose_age > self.pose_timeout_sec:
-            return None
-        return pose
+        return None if pose_age > self.pose_timeout_sec else pose
+
+    def _is_stop_requested(self) -> bool:
+        with self._lock:
+            return self._stop_requested
 
     def _stop_robot(self) -> None:
         self._cmd_vel_publisher.publish(Twist())
 
     def _publish_status(self, status: str) -> None:
-        message = String()
-        message.data = status
-        self._status_publisher.publish(message)
+        self._status_publisher.publish(String(data=status))
 
 
 def main(args=None) -> None:
@@ -1358,7 +916,6 @@ def main(args=None) -> None:
     node = MissionManager()
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
-
     try:
         executor.spin()
     except KeyboardInterrupt:

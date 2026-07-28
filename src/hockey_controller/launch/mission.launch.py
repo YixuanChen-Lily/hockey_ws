@@ -36,6 +36,9 @@ def generate_launch_description() -> LaunchDescription:
     front_clearance = LaunchConfiguration("front_clearance")
     parking_robot_safety_radius = LaunchConfiguration("parking_robot_safety_radius")
     parking_safety_margin = LaunchConfiguration("parking_safety_margin")
+    parking_lookahead_distance = LaunchConfiguration("parking_lookahead_distance")
+    final_approach_speed = LaunchConfiguration("final_approach_speed")
+    final_approach_point_gain = LaunchConfiguration("final_approach_point_gain")
 
     linear_speed = LaunchConfiguration("linear_speed")
     angular_speed = LaunchConfiguration("angular_speed")
@@ -96,6 +99,9 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="0.20",
             ),
             DeclareLaunchArgument("parking_safety_margin", default_value="0.10"),
+            DeclareLaunchArgument("parking_lookahead_distance", default_value="0.25"),
+            DeclareLaunchArgument("final_approach_speed", default_value="0.12"),
+            DeclareLaunchArgument("final_approach_point_gain", default_value="0.35"),
 
             # Mission-level speed and timeout knobs.
             DeclareLaunchArgument("linear_speed", default_value="0.4"),
@@ -212,6 +218,9 @@ def generate_launch_description() -> LaunchDescription:
                         "front_clearance": front_clearance,
                         "parking_robot_safety_radius": parking_robot_safety_radius,
                         "parking_safety_margin": parking_safety_margin,
+                        "parking_lookahead_distance": parking_lookahead_distance,
+                        "final_approach_speed": final_approach_speed,
+                        "final_approach_point_gain": final_approach_point_gain,
                         "linear_speed": linear_speed,
                         "angular_speed": angular_speed,
                         "safe_navigation_timeout_sec": (
