@@ -66,8 +66,10 @@ class MoveArmServer(Node):
 
         self.get_logger().info(
             "Move-arm action server ready:\n"
-            f"  action        = {self.action_name}\n"
-            f"  driver action = {self.driver_action_name}"
+            f"  robot_id            = {self.robot_id}\n"
+            f"  action              = {self.action_name}\n"
+            f"  driver action       = {self.driver_action_name}\n"
+            f"  driver wait timeout = {self.driver_wait_timeout_sec} s"
         )
 
     def _goal_callback(self, request: MoveArm.Goal) -> GoalResponse:
@@ -83,6 +85,10 @@ class MoveArmServer(Node):
                 return GoalResponse.REJECT
             self._goal_active = True
 
+        self.get_logger().info(
+            "Accepted arm goal: "
+            f"x={request.x:.3f}m, z={request.z:.3f}m, relative={request.relative}."
+        )
         return GoalResponse.ACCEPT
 
     def _cancel_callback(self, goal_handle) -> CancelResponse:
@@ -95,6 +101,9 @@ class MoveArmServer(Node):
         driver_goal_handle: Optional[Any] = None
 
         try:
+            self.get_logger().info(
+                f"Waiting for RoboMaster arm action {self.driver_action_name}."
+            )
             if not self._driver_client.wait_for_server(
                 timeout_sec=self.driver_wait_timeout_sec
             ):
@@ -104,12 +113,18 @@ class MoveArmServer(Node):
                     "RoboMaster arm action unavailable: "
                     f"{self.driver_action_name}"
                 )
+                self.get_logger().error(result.message)
                 return result
 
             driver_goal = RobomasterMoveArm.Goal()
             driver_goal.x = float(goal_handle.request.x)
             driver_goal.z = float(goal_handle.request.z)
             driver_goal.relative = bool(goal_handle.request.relative)
+            self.get_logger().info(
+                "Forwarding arm goal to RoboMaster driver: "
+                f"x={driver_goal.x:.3f}m, z={driver_goal.z:.3f}m, "
+                f"relative={driver_goal.relative}."
+            )
 
             response_event = Event()
             result_event = Event()
@@ -125,10 +140,16 @@ class MoveArmServer(Node):
                     max(0.0, min(1.0, feedback_message.feedback.progress))
                 )
                 goal_handle.publish_feedback(feedback)
+                self.get_logger().info(
+                    f"Arm movement progress: {feedback.progress * 100.0:.0f}%."
+                )
 
             def driver_result_callback(future) -> None:
                 try:
                     state["status"] = future.result().status
+                    self.get_logger().info(
+                        f"RoboMaster arm result received: status={state['status']}."
+                    )
                 except Exception as exception:
                     state["error"] = str(exception)
                 finally:
@@ -139,7 +160,9 @@ class MoveArmServer(Node):
                     state["goal_handle"] = future.result()
                     if not state["goal_handle"].accepted:
                         state["error"] = "RoboMaster arm goal was rejected"
+                        self.get_logger().error(state["error"])
                     else:
+                        self.get_logger().info("RoboMaster driver accepted arm goal.")
                         state["goal_handle"].get_result_async().add_done_callback(
                             driver_result_callback
                         )
@@ -214,6 +237,10 @@ class MoveArmServer(Node):
                     "RoboMaster arm movement failed with status "
                     f"{state['status']}."
                 )
+            if result.success:
+                self.get_logger().info(result.message)
+            else:
+                self.get_logger().warning(result.message)
             return result
 
         except Exception as exception:

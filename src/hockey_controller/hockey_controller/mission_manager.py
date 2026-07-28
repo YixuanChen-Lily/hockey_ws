@@ -147,11 +147,17 @@ class MissionManager(Node):
         duration = float(self.backward_duration_sec)
         twist = Twist()
         twist.linear.x = -float(self.backward_distance) / duration
+        self.get_logger().info(
+            "Backing up: "
+            f"distance={float(self.backward_distance):.3f}m, "
+            f"duration={duration:.2f}s, velocity={twist.linear.x:.3f}m/s."
+        )
         start = monotonic()
         while monotonic() - start < duration:
             self._cmd_vel_publisher.publish(twist)
             Event().wait(1.0 / float(self.backward_publish_rate_hz))
         self._stop_robot()
+        self.get_logger().info("Backing up completed.")
 
     def _navigate(self, point, speed) -> None:
         goal = NavigateToPoint.Goal()

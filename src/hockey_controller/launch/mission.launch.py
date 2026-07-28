@@ -159,7 +159,7 @@ def generate_launch_description() -> LaunchDescription:
             # ============================================================
             # Step 1: move the arm to the stick pickup pose.
             DeclareLaunchArgument("grab_arm_x", default_value="0.0"),
-            DeclareLaunchArgument("grab_arm_z", default_value="0.0"),
+            DeclareLaunchArgument("grab_arm_z", default_value="1.0"),
             DeclareLaunchArgument("grab_arm_relative", default_value="false"),
             DeclareLaunchArgument("grab_arm_settle_sec", default_value="0.3"),
             # Step 2: close the gripper (power must remain in [0, 1]).
@@ -172,7 +172,7 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="0.5",
             ),
             # Step 3: lift the arm while retaining the closed gripper.
-            DeclareLaunchArgument("lift_arm_x", default_value="0.0"),
+            DeclareLaunchArgument("lift_arm_x", default_value="1.0"),
             DeclareLaunchArgument("lift_arm_z", default_value="0.0"),
             DeclareLaunchArgument("lift_arm_relative", default_value="false"),
             DeclareLaunchArgument("lift_arm_settle_sec", default_value="0.3"),
@@ -187,8 +187,8 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="20.0",
             ),
             # Step 5: lower the arm into the ready-to-hit pose.
-            DeclareLaunchArgument("ready_arm_x", default_value="0.0"),
-            DeclareLaunchArgument("ready_arm_z", default_value="0.0"),
+            DeclareLaunchArgument("ready_arm_x", default_value="1.0"),
+            DeclareLaunchArgument("ready_arm_z", default_value="1.0"),
             DeclareLaunchArgument("ready_arm_relative", default_value="false"),
             DeclareLaunchArgument("ready_arm_settle_sec", default_value="0.3"),
             Node(
