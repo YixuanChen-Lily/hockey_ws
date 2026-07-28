@@ -1,0 +1,14 @@
+docker run -d \
+  --restart unless-stopped \
+  --network=host \
+  --pid=host \
+  --ipc=host \
+  --volume "$(pwd):/hockey_ws:rw" \
+  --volume "$HOME/.Xauthority:/root/.Xauthority:rw" \
+  --env DISPLAY \
+  --env ROS_DISCOVERY_SERVER=192.168.0.2:11811 \
+  --env ROS_SUPER_CLIENT=TRUE \
+  --mount type=bind,source=/mnt/wslg/.X11-unix,target=/tmp/.X11-unix \
+  --name hockey \
+  dji_robomaster_ros:1.0 \
+  sleep infinity

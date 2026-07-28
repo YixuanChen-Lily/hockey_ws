@@ -6,10 +6,6 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     robot_id = LaunchConfiguration("robot_id")
-    target_x = LaunchConfiguration("target_x")
-    target_y = LaunchConfiguration("target_y")
-    safe_target_x = LaunchConfiguration("safe_target_x")
-    safe_target_y = LaunchConfiguration("safe_target_y")
     safe_lookahead_distance = LaunchConfiguration("safe_lookahead_distance")
     safe_point_gain = LaunchConfiguration("safe_point_gain")
     safe_clf_gain = LaunchConfiguration("safe_clf_gain")
@@ -29,7 +25,6 @@ def generate_launch_description() -> LaunchDescription:
     )
     safe_orient_to_target = LaunchConfiguration("safe_orient_to_target")
     safe_use_target_pose = LaunchConfiguration("safe_use_target_pose")
-    parking_enabled = LaunchConfiguration("parking_enabled")
     cushion_length = LaunchConfiguration("cushion_length")
     cushion_width = LaunchConfiguration("cushion_width")
     parking_front_axis = LaunchConfiguration("parking_front_axis")
@@ -44,15 +39,15 @@ def generate_launch_description() -> LaunchDescription:
     parking_lookahead_distance = LaunchConfiguration("parking_lookahead_distance")
     final_approach_speed = LaunchConfiguration("final_approach_speed")
     final_approach_point_gain = LaunchConfiguration("final_approach_point_gain")
+<<<<<<< Updated upstream
     visualization_frame = LaunchConfiguration("visualization_frame")
     rotations = LaunchConfiguration("rotations")
+=======
+    align_gain = LaunchConfiguration("align_gain")
+    final_yaw_tolerance = LaunchConfiguration("final_yaw_tolerance")
+>>>>>>> Stashed changes
     linear_speed = LaunchConfiguration("linear_speed")
     angular_speed = LaunchConfiguration("angular_speed")
-    navigation_timeout_sec = LaunchConfiguration("navigation_timeout_sec")
-    safe_navigation_timeout_sec = LaunchConfiguration(
-        "safe_navigation_timeout_sec"
-    )
-    spin_timeout_sec = LaunchConfiguration("spin_timeout_sec")
     arm_action_name = LaunchConfiguration("arm_action_name")
     driver_arm_action_name = LaunchConfiguration("driver_arm_action_name")
     gripper_action_name = LaunchConfiguration("gripper_action_name")
@@ -63,25 +58,18 @@ def generate_launch_description() -> LaunchDescription:
     # ================================================================
     # Hockey-stick pickup and ready-position tuning parameters.
     #
-    # Keep stick_setup_enabled false until the three arm X/Z positions
-    # have been measured on the real robot. MoveArm uses meters: +X points
+    # MoveArm uses meters: +X points
     # forward and +Z points upward. With *_relative=false, X/Z are absolute
     # in arm_base_link; with *_relative=true, they are motion increments.
     # ================================================================
-    stick_setup_enabled = LaunchConfiguration("stick_setup_enabled")
-
     # Step 1: arm end-effector pose used to reach the hockey stick.
     grab_arm_x = LaunchConfiguration("grab_arm_x")
     grab_arm_z = LaunchConfiguration("grab_arm_z")
     grab_arm_relative = LaunchConfiguration("grab_arm_relative")
-    grab_arm_timeout_sec = LaunchConfiguration("grab_arm_timeout_sec")
     grab_arm_settle_sec = LaunchConfiguration("grab_arm_settle_sec")
 
-    # Step 2: gripper close power, Action timeout, and settling time.
+    # Step 2: gripper close power and settling time.
     gripper_close_power = LaunchConfiguration("gripper_close_power")
-    gripper_close_timeout_sec = LaunchConfiguration(
-        "gripper_close_timeout_sec"
-    )
     gripper_close_settle_sec = LaunchConfiguration(
         "gripper_close_settle_sec"
     )
@@ -90,7 +78,6 @@ def generate_launch_description() -> LaunchDescription:
     lift_arm_x = LaunchConfiguration("lift_arm_x")
     lift_arm_z = LaunchConfiguration("lift_arm_z")
     lift_arm_relative = LaunchConfiguration("lift_arm_relative")
-    lift_arm_timeout_sec = LaunchConfiguration("lift_arm_timeout_sec")
     lift_arm_settle_sec = LaunchConfiguration("lift_arm_settle_sec")
 
     # Step 4: open-loop reverse motion using /robotN/cmd_vel Twist.
@@ -99,22 +86,16 @@ def generate_launch_description() -> LaunchDescription:
     backward_publish_rate_hz = LaunchConfiguration(
         "backward_publish_rate_hz"
     )
-    backward_max_speed = LaunchConfiguration("backward_max_speed")
 
     # Step 5: arm end-effector pose for the ready-to-hit configuration.
     ready_arm_x = LaunchConfiguration("ready_arm_x")
     ready_arm_z = LaunchConfiguration("ready_arm_z")
     ready_arm_relative = LaunchConfiguration("ready_arm_relative")
-    ready_arm_timeout_sec = LaunchConfiguration("ready_arm_timeout_sec")
     ready_arm_settle_sec = LaunchConfiguration("ready_arm_settle_sec")
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_id", default_value="1"),
-            DeclareLaunchArgument("target_x", default_value="1.0"),
-            DeclareLaunchArgument("target_y", default_value="0.0"),
-            DeclareLaunchArgument("safe_target_x", default_value="1.0"),
-            DeclareLaunchArgument("safe_target_y", default_value="0.0"),
             DeclareLaunchArgument("safe_lookahead_distance", default_value="0.25"),
             DeclareLaunchArgument("safe_point_gain", default_value="0.8"),
             DeclareLaunchArgument("safe_clf_gain", default_value="1.0"),
@@ -138,7 +119,6 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument("safe_orient_to_target", default_value="true"),
             DeclareLaunchArgument("safe_use_target_pose", default_value="true"),
-            DeclareLaunchArgument("parking_enabled", default_value="true"),
             DeclareLaunchArgument("cushion_length", default_value="1.0"),
             DeclareLaunchArgument("cushion_width", default_value="0.12"),
             DeclareLaunchArgument("parking_front_axis", default_value="y"),
@@ -156,6 +136,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("parking_lookahead_distance", default_value="0.25"),
             DeclareLaunchArgument("final_approach_speed", default_value="0.12"),
             DeclareLaunchArgument("final_approach_point_gain", default_value="0.35"),
+<<<<<<< Updated upstream
             DeclareLaunchArgument("visualization_frame", default_value="map"),
             DeclareLaunchArgument("rotations", default_value="1"),
             DeclareLaunchArgument("linear_speed", default_value="0.4"),
@@ -166,6 +147,12 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="30.0",
             ),
             DeclareLaunchArgument("spin_timeout_sec", default_value="15.0"),
+=======
+            DeclareLaunchArgument("align_gain", default_value="2.0"),
+            DeclareLaunchArgument("final_yaw_tolerance", default_value="0.08"),
+            DeclareLaunchArgument("linear_speed", default_value="0.4"),
+            DeclareLaunchArgument("angular_speed", default_value="0.8"),
+>>>>>>> Stashed changes
             DeclareLaunchArgument(
                 "arm_action_name",
                 default_value="control_arm",
@@ -185,29 +172,18 @@ def generate_launch_description() -> LaunchDescription:
             # ============================================================
             # Hockey-stick pickup and ready-position parameters.
             #
-            # Action timeout values are maximum completion times. Settle
-            # values are additional waits after successful Action results.
-            # The task stays disabled by default because zero X/Z values are
-            # placeholders that must be calibrated on the physical robot.
+            # Settle values are waits after Action results. X/Z values must
+            # be calibrated on the physical robot.
             # ============================================================
-            DeclareLaunchArgument(
-                "stick_setup_enabled",
-                default_value="false",
-            ),
             # Step 1: move the arm to the stick pickup pose.
             DeclareLaunchArgument("grab_arm_x", default_value="0.0"),
             DeclareLaunchArgument("grab_arm_z", default_value="0.0"),
             DeclareLaunchArgument("grab_arm_relative", default_value="false"),
-            DeclareLaunchArgument("grab_arm_timeout_sec", default_value="8.0"),
             DeclareLaunchArgument("grab_arm_settle_sec", default_value="0.3"),
             # Step 2: close the gripper (power must remain in [0, 1]).
             DeclareLaunchArgument(
                 "gripper_close_power",
                 default_value="0.5",
-            ),
-            DeclareLaunchArgument(
-                "gripper_close_timeout_sec",
-                default_value="5.0",
             ),
             DeclareLaunchArgument(
                 "gripper_close_settle_sec",
@@ -217,7 +193,6 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("lift_arm_x", default_value="0.0"),
             DeclareLaunchArgument("lift_arm_z", default_value="0.0"),
             DeclareLaunchArgument("lift_arm_relative", default_value="false"),
-            DeclareLaunchArgument("lift_arm_timeout_sec", default_value="8.0"),
             DeclareLaunchArgument("lift_arm_settle_sec", default_value="0.3"),
             # Step 4: reverse distance and duration determine Twist speed.
             DeclareLaunchArgument("backward_distance", default_value="0.30"),
@@ -229,18 +204,14 @@ def generate_launch_description() -> LaunchDescription:
                 "backward_publish_rate_hz",
                 default_value="20.0",
             ),
-            DeclareLaunchArgument("backward_max_speed", default_value="0.30"),
             # Step 5: lower the arm into the ready-to-hit pose.
             DeclareLaunchArgument("ready_arm_x", default_value="0.0"),
             DeclareLaunchArgument("ready_arm_z", default_value="0.0"),
             DeclareLaunchArgument("ready_arm_relative", default_value="false"),
-            DeclareLaunchArgument(
-                "ready_arm_timeout_sec",
-                default_value="8.0",
-            ),
             DeclareLaunchArgument("ready_arm_settle_sec", default_value="0.3"),
             Node(
                 package="hockey_controller",
+<<<<<<< Updated upstream
                 executable="navigation_server",
                 name="navigation_server",
                 output="screen",
@@ -252,6 +223,8 @@ def generate_launch_description() -> LaunchDescription:
             ),
             Node(
                 package="hockey_controller",
+=======
+>>>>>>> Stashed changes
                 executable="safe_navigation_server",
                 name="safe_navigation_server",
                 output="screen",
@@ -283,6 +256,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
             Node(
                 package="hockey_controller",
+<<<<<<< Updated upstream
                 executable="spin_server",
                 name="spin_server",
                 output="screen",
@@ -294,6 +268,8 @@ def generate_launch_description() -> LaunchDescription:
             ),
             Node(
                 package="hockey_controller",
+=======
+>>>>>>> Stashed changes
                 executable="move_arm_server",
                 name="move_arm_server",
                 output="screen",
@@ -325,18 +301,11 @@ def generate_launch_description() -> LaunchDescription:
                 output="screen",
                 parameters=[
                     {
-                        "navigation_action": "navigate_to_point",
                         "safe_navigation_action": "safe_navigate_to_point",
-                        "spin_action": "spin",
                         "arm_action": arm_action_name,
                         "gripper_action": gripper_action_name,
                         "robot_id": robot_id,
                         "cushion_pose_topic": target_pose_topic,
-                        "parking_enabled": parking_enabled,
-                        "target_x": target_x,
-                        "target_y": target_y,
-                        "safe_target_x": safe_target_x,
-                        "safe_target_y": safe_target_y,
                         "cushion_length": cushion_length,
                         "cushion_width": cushion_width,
                         "parking_front_axis": parking_front_axis,
@@ -351,41 +320,31 @@ def generate_launch_description() -> LaunchDescription:
                         "parking_lookahead_distance": parking_lookahead_distance,
                         "final_approach_speed": final_approach_speed,
                         "final_approach_point_gain": final_approach_point_gain,
+<<<<<<< Updated upstream
                         "visualization_frame": visualization_frame,
                         "rotations": rotations,
+=======
+                        "align_gain": align_gain,
+                        "final_yaw_tolerance": final_yaw_tolerance,
+>>>>>>> Stashed changes
                         "linear_speed": linear_speed,
                         "angular_speed": angular_speed,
-                        "navigation_timeout_sec": navigation_timeout_sec,
-                        "safe_navigation_timeout_sec": (
-                            safe_navigation_timeout_sec
-                        ),
-                        "spin_timeout_sec": spin_timeout_sec,
-                        # Stick pickup and ready-position task. See the
-                        # DeclareLaunchArgument block above before tuning.
-                        "stick_setup_enabled": stick_setup_enabled,
                         "grab_arm_x": grab_arm_x,
                         "grab_arm_z": grab_arm_z,
                         "grab_arm_relative": grab_arm_relative,
-                        "grab_arm_timeout_sec": grab_arm_timeout_sec,
                         "grab_arm_settle_sec": grab_arm_settle_sec,
                         "gripper_close_power": gripper_close_power,
-                        "gripper_close_timeout_sec": (
-                            gripper_close_timeout_sec
-                        ),
                         "gripper_close_settle_sec": gripper_close_settle_sec,
                         "lift_arm_x": lift_arm_x,
                         "lift_arm_z": lift_arm_z,
                         "lift_arm_relative": lift_arm_relative,
-                        "lift_arm_timeout_sec": lift_arm_timeout_sec,
                         "lift_arm_settle_sec": lift_arm_settle_sec,
                         "backward_distance": backward_distance,
                         "backward_duration_sec": backward_duration_sec,
                         "backward_publish_rate_hz": backward_publish_rate_hz,
-                        "backward_max_speed": backward_max_speed,
                         "ready_arm_x": ready_arm_x,
                         "ready_arm_z": ready_arm_z,
                         "ready_arm_relative": ready_arm_relative,
-                        "ready_arm_timeout_sec": ready_arm_timeout_sec,
                         "ready_arm_settle_sec": ready_arm_settle_sec,
                     }
                 ],

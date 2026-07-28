@@ -16,8 +16,7 @@ docker exec -it hockey /bin/bash -lc '
   ros2 pkg prefix hockey_controller
   ros2 launch hockey_controller mission.launch.py \
   robot_id:=9 \
-  target_pose_topic:=/vrpn_mocap/hockey_sticks_4/pose \
-	parking_enabled:=true \
+  target_pose_topic:=/vrpn_mocap/hockey_sticks_1/pose \
 	safe_qp_solver:=osqp \
 	cushion_length:=0.3 \
 	cushion_width:=0.42 \
@@ -28,6 +27,5 @@ docker exec -it hockey /bin/bash -lc '
 	pre_park_backoff:=0.40 \
 	parking_robot_safety_radius:=0.0 \
 	parking_safety_margin:=0.0
-  stick_setup_enabled:=true \
   exec /bin/bash
 '
