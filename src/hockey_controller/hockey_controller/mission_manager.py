@@ -30,11 +30,10 @@ class MissionManager(Node):
             "parking_front_axis": "y", "front_normal_sign": -1.0,
             "front_side_threshold": 0.0, "side_clearance": 0.35,
             "front_clearance": 0.35, "desired_normal_distance": 0.35,
-            "tangential_offset": 0.0, "parking_lateral_offset": 0.0,
+            "tangential_offset": 0.0,
             "pre_park_backoff": 0.40, "parking_robot_safety_radius": 0.20,
             "stick_safety_extension": 0.0, "parking_safety_margin": 0.10,
-            "cushion_circle_spacing": 0.20, "cushion_obstacle_axis": "local_x",
-            "cushion_obstacle_radius_override": -1.0,
+            "cushion_circle_spacing": 0.20,
             "parking_lookahead_distance": 0.25, "linear_speed": 0.4,
             "angular_speed": 0.8, "final_approach_speed": 0.12,
             "final_approach_point_gain": 0.35, "align_gain": 2.0,
@@ -99,14 +98,11 @@ class MissionManager(Node):
             side_clearance=float(self.side_clearance), front_clearance=float(self.front_clearance),
             desired_normal_distance=float(self.desired_normal_distance),
             tangential_offset=float(self.tangential_offset),
-            parking_lateral_offset=float(self.parking_lateral_offset),
             pre_park_backoff=float(self.pre_park_backoff),
             robot_safety_radius=float(self.parking_robot_safety_radius),
             stick_safety_extension=float(self.stick_safety_extension),
             safety_margin=float(self.parking_safety_margin),
-            circle_spacing=float(self.cushion_circle_spacing),
-            obstacle_axis=str(self.cushion_obstacle_axis),
-            obstacle_radius_override=float(self.cushion_obstacle_radius_override))
+            circle_spacing=float(self.cushion_circle_spacing))
         plan = plan_parking_route((robot_pose[0], robot_pose[1]), geometry, config)
         self._configure_safe_navigation(plan)
         for waypoint in plan.waypoints[:-2]:

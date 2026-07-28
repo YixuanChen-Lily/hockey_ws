@@ -39,13 +39,8 @@ def generate_launch_description() -> LaunchDescription:
     parking_lookahead_distance = LaunchConfiguration("parking_lookahead_distance")
     final_approach_speed = LaunchConfiguration("final_approach_speed")
     final_approach_point_gain = LaunchConfiguration("final_approach_point_gain")
-<<<<<<< Updated upstream
-    visualization_frame = LaunchConfiguration("visualization_frame")
-    rotations = LaunchConfiguration("rotations")
-=======
     align_gain = LaunchConfiguration("align_gain")
     final_yaw_tolerance = LaunchConfiguration("final_yaw_tolerance")
->>>>>>> Stashed changes
     linear_speed = LaunchConfiguration("linear_speed")
     angular_speed = LaunchConfiguration("angular_speed")
     arm_action_name = LaunchConfiguration("arm_action_name")
@@ -136,23 +131,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("parking_lookahead_distance", default_value="0.25"),
             DeclareLaunchArgument("final_approach_speed", default_value="0.12"),
             DeclareLaunchArgument("final_approach_point_gain", default_value="0.35"),
-<<<<<<< Updated upstream
-            DeclareLaunchArgument("visualization_frame", default_value="map"),
-            DeclareLaunchArgument("rotations", default_value="1"),
-            DeclareLaunchArgument("linear_speed", default_value="0.4"),
-            DeclareLaunchArgument("angular_speed", default_value="0.8"),
-            DeclareLaunchArgument("navigation_timeout_sec", default_value="30.0"),
-            DeclareLaunchArgument(
-                "safe_navigation_timeout_sec",
-                default_value="30.0",
-            ),
-            DeclareLaunchArgument("spin_timeout_sec", default_value="15.0"),
-=======
             DeclareLaunchArgument("align_gain", default_value="2.0"),
             DeclareLaunchArgument("final_yaw_tolerance", default_value="0.08"),
             DeclareLaunchArgument("linear_speed", default_value="0.4"),
             DeclareLaunchArgument("angular_speed", default_value="0.8"),
->>>>>>> Stashed changes
             DeclareLaunchArgument(
                 "arm_action_name",
                 default_value="control_arm",
@@ -211,20 +193,6 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("ready_arm_settle_sec", default_value="0.3"),
             Node(
                 package="hockey_controller",
-<<<<<<< Updated upstream
-                executable="navigation_server",
-                name="navigation_server",
-                output="screen",
-                parameters=[
-                    {
-                        "robot_id": robot_id,
-                    }
-                ],
-            ),
-            Node(
-                package="hockey_controller",
-=======
->>>>>>> Stashed changes
                 executable="safe_navigation_server",
                 name="safe_navigation_server",
                 output="screen",
@@ -256,20 +224,6 @@ def generate_launch_description() -> LaunchDescription:
             ),
             Node(
                 package="hockey_controller",
-<<<<<<< Updated upstream
-                executable="spin_server",
-                name="spin_server",
-                output="screen",
-                parameters=[
-                    {
-                        "robot_id": robot_id,
-                    }
-                ],
-            ),
-            Node(
-                package="hockey_controller",
-=======
->>>>>>> Stashed changes
                 executable="move_arm_server",
                 name="move_arm_server",
                 output="screen",
@@ -320,13 +274,8 @@ def generate_launch_description() -> LaunchDescription:
                         "parking_lookahead_distance": parking_lookahead_distance,
                         "final_approach_speed": final_approach_speed,
                         "final_approach_point_gain": final_approach_point_gain,
-<<<<<<< Updated upstream
-                        "visualization_frame": visualization_frame,
-                        "rotations": rotations,
-=======
                         "align_gain": align_gain,
                         "final_yaw_tolerance": final_yaw_tolerance,
->>>>>>> Stashed changes
                         "linear_speed": linear_speed,
                         "angular_speed": angular_speed,
                         "grab_arm_x": grab_arm_x,
