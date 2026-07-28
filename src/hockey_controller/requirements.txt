@@ -1,3 +1,4 @@
-cvxpy
-osqp
+qpsolvers
+cvxopt
+numpy
 matplotlib
