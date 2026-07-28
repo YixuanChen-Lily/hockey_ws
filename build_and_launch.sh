@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 xhost +
 
 docker exec -it hockey /bin/bash -lc '
