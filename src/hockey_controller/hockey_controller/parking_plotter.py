@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 
+import ast
 import math
 import time
 from collections import deque
+from dataclasses import dataclass
 from threading import Lock
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from visualization_msgs.msg import Marker, MarkerArray
+
+
+@dataclass
+class DynamicRobotPlotState:
+    x: float
+    y: float
+    timestamp_sec: float
 
 
 class ParkingPlotter(Node):
@@ -28,6 +38,16 @@ class ParkingPlotter(Node):
         self.declare_parameter("axis_margin", 0.35)
         self.declare_parameter("show_gui", False)
         self.declare_parameter("output_path", "/tmp/parking_plot.png")
+        dynamic_ids_descriptor = ParameterDescriptor(dynamic_typing=True)
+        self.declare_parameter("dynamic_robot_ids", [], dynamic_ids_descriptor)
+        self.declare_parameter(
+            "dynamic_pose_topic_template",
+            "/vrpn_mocap/dji_robot_{robot_id}/pose",
+        )
+        self.declare_parameter("dynamic_controlled_robot_radius", 0.18)
+        self.declare_parameter("dynamic_robot_radius", 0.18)
+        self.declare_parameter("dynamic_robot_safety_margin", 0.10)
+        self.declare_parameter("dynamic_obstacle_timeout_sec", 0.5)
 
         robot_id = int(self.get_parameter("robot_id").value)
         pose_topic = str(self.get_parameter("pose_topic").value)
@@ -40,6 +60,20 @@ class ParkingPlotter(Node):
         self.axis_margin = float(self.get_parameter("axis_margin").value)
         self.show_gui = bool(self.get_parameter("show_gui").value)
         self.output_path = str(self.get_parameter("output_path").value)
+        self.dynamic_robot_ids = self._coerce_int_array(
+            self.get_parameter("dynamic_robot_ids").value
+        )
+        self.dynamic_pose_topic_template = str(
+            self.get_parameter("dynamic_pose_topic_template").value
+        )
+        self.dynamic_obstacle_radius = (
+            float(self.get_parameter("dynamic_controlled_robot_radius").value)
+            + float(self.get_parameter("dynamic_robot_radius").value)
+            + float(self.get_parameter("dynamic_robot_safety_margin").value)
+        )
+        self.dynamic_obstacle_timeout_sec = float(
+            self.get_parameter("dynamic_obstacle_timeout_sec").value
+        )
         self.plot_period_sec = 1.0 / max(
             float(self.get_parameter("plot_rate_hz").value),
             0.5,
@@ -47,6 +81,8 @@ class ParkingPlotter(Node):
         trajectory_length = int(self.get_parameter("trajectory_length").value)
         self._trajectory = deque(maxlen=max(1, trajectory_length))
         self._markers: List[Marker] = []
+        self._dynamic_robot_states: Dict[int, DynamicRobotPlotState] = {}
+        self._dynamic_robot_subscriptions = []
         self._dirty = True
         self._lock = Lock()
         self._callback_group = ReentrantCallbackGroup()
@@ -65,6 +101,19 @@ class ParkingPlotter(Node):
             10,
             callback_group=self._callback_group,
         )
+        for dynamic_robot_id in self.dynamic_robot_ids:
+            topic = self.dynamic_pose_topic_template.format(
+                robot_id=dynamic_robot_id
+            )
+            self._dynamic_robot_subscriptions.append(
+                self.create_subscription(
+                    PoseStamped,
+                    topic,
+                    self._make_dynamic_pose_callback(dynamic_robot_id),
+                    qos_profile_sensor_data,
+                    callback_group=self._callback_group,
+                )
+            )
 
         self._plt, self._patches, self._transforms = self._import_matplotlib()
         self._figure = self._plt.figure(figsize=(12.0, 6.5))
@@ -79,9 +128,18 @@ class ParkingPlotter(Node):
             "Parking plotter ready:\n"
             f"  pose   = {self.pose_topic}\n"
             f"  marker = {self.marker_topic}\n"
+            f"  dynamic robots = {self.dynamic_robot_ids}\n"
+            f"  dynamic radius = {self.dynamic_obstacle_radius:.2f}\n"
             f"  gui    = {self.show_gui}\n"
             f"  output = {self.output_path}"
         )
+
+    def _coerce_int_array(self, value) -> List[int]:
+        if isinstance(value, str):
+            parsed = ast.literal_eval(value)
+        else:
+            parsed = value
+        return [int(item) for item in parsed]
 
     def _import_matplotlib(self):
         try:
@@ -139,12 +197,32 @@ class ParkingPlotter(Node):
                 self._markers.append(marker)
             self._dirty = True
 
+    def _make_dynamic_pose_callback(self, robot_id: int):
+        def callback(message: PoseStamped) -> None:
+            self._dynamic_pose_callback(robot_id, message)
+
+        return callback
+
+    def _dynamic_pose_callback(
+        self,
+        robot_id: int,
+        message: PoseStamped,
+    ) -> None:
+        with self._lock:
+            self._dynamic_robot_states[robot_id] = DynamicRobotPlotState(
+                x=float(message.pose.position.x),
+                y=float(message.pose.position.y),
+                timestamp_sec=time.monotonic(),
+            )
+            self._dirty = True
+
     def _draw(self) -> None:
         with self._lock:
             if not self._dirty:
                 return
             markers = list(self._markers)
             trajectory = list(self._trajectory)
+            dynamic_robot_states = dict(self._dynamic_robot_states)
             self._dirty = False
 
         self._axis.clear()
@@ -159,6 +237,7 @@ class ParkingPlotter(Node):
         plotted_points: List[Tuple[float, float]] = []
         for marker in markers:
             plotted_points.extend(self._draw_marker(marker))
+        plotted_points.extend(self._draw_dynamic_obstacles(dynamic_robot_states))
 
         if trajectory:
             xs = [point[0] for point in trajectory]
@@ -204,6 +283,65 @@ class ParkingPlotter(Node):
             )
             return [(start.x, start.y), (end.x, end.y)]
         return []
+
+    def _draw_dynamic_obstacles(
+        self,
+        states: Dict[int, DynamicRobotPlotState],
+    ) -> List[Tuple[float, float]]:
+        plotted_points = []
+        now_sec = time.monotonic()
+        for robot_id in self.dynamic_robot_ids:
+            state: Optional[DynamicRobotPlotState] = states.get(robot_id)
+            if state is None:
+                continue
+            age_sec = now_sec - state.timestamp_sec
+            is_stale = age_sec > self.dynamic_obstacle_timeout_sec
+            color = (1.0, 0.0, 0.0, 0.22) if not is_stale else (0.35, 0.35, 0.35, 0.16)
+            edge_color = (1.0, 0.0, 0.0) if not is_stale else (0.35, 0.35, 0.35)
+            circle = self._patches.Circle(
+                (state.x, state.y),
+                self.dynamic_obstacle_radius,
+                facecolor=color,
+                edgecolor=edge_color,
+                linewidth=1.4,
+                linestyle="-" if not is_stale else "--",
+                label=(
+                    f"dynamic_obstacle r={self.dynamic_obstacle_radius:.2f}"
+                    if not is_stale
+                    else f"stale_dynamic_obstacle r={self.dynamic_obstacle_radius:.2f}"
+                ),
+            )
+            self._axis.add_patch(circle)
+            self._axis.scatter(
+                state.x,
+                state.y,
+                color=edge_color,
+                s=28,
+                marker="o",
+                label=f"dynamic_robot_{robot_id}",
+            )
+            self._axis.text(
+                state.x,
+                state.y,
+                str(robot_id),
+                color=edge_color,
+                fontsize=8,
+                ha="center",
+                va="center",
+            )
+            plotted_points.extend(
+                [
+                    (
+                        state.x - self.dynamic_obstacle_radius,
+                        state.y - self.dynamic_obstacle_radius,
+                    ),
+                    (
+                        state.x + self.dynamic_obstacle_radius,
+                        state.y + self.dynamic_obstacle_radius,
+                    ),
+                ]
+            )
+        return plotted_points
 
     def _draw_circle(self, marker: Marker) -> List[Tuple[float, float]]:
         x = marker.pose.position.x
