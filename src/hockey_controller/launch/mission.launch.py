@@ -49,6 +49,23 @@ def generate_launch_description() -> LaunchDescription:
     final_yaw_tolerance = LaunchConfiguration("final_yaw_tolerance")
 
     use_manipulator = LaunchConfiguration("use_manipulator")
+    grab_arm_x = LaunchConfiguration("grab_arm_x")
+    grab_arm_z = LaunchConfiguration("grab_arm_z")
+    grab_arm_relative = LaunchConfiguration("grab_arm_relative")
+    grab_arm_settle_sec = LaunchConfiguration("grab_arm_settle_sec")
+    gripper_close_power = LaunchConfiguration("gripper_close_power")
+    gripper_close_settle_sec = LaunchConfiguration("gripper_close_settle_sec")
+    lift_arm_x = LaunchConfiguration("lift_arm_x")
+    lift_arm_z = LaunchConfiguration("lift_arm_z")
+    lift_arm_relative = LaunchConfiguration("lift_arm_relative")
+    lift_arm_settle_sec = LaunchConfiguration("lift_arm_settle_sec")
+    backward_distance = LaunchConfiguration("backward_distance")
+    backward_duration_sec = LaunchConfiguration("backward_duration_sec")
+    backward_publish_rate_hz = LaunchConfiguration("backward_publish_rate_hz")
+    ready_arm_x = LaunchConfiguration("ready_arm_x")
+    ready_arm_z = LaunchConfiguration("ready_arm_z")
+    ready_arm_relative = LaunchConfiguration("ready_arm_relative")
+    ready_arm_settle_sec = LaunchConfiguration("ready_arm_settle_sec")
 
     return LaunchDescription(
         [
@@ -113,8 +130,25 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("align_timeout_sec", default_value="8.0"),
             DeclareLaunchArgument("final_yaw_tolerance", default_value="0.08"),
 
-            # Only enable when arm/gripper dependencies are installed and needed.
-            DeclareLaunchArgument("use_manipulator", default_value="false"),
+            # Stick pickup is part of this mission.
+            DeclareLaunchArgument("use_manipulator", default_value="true"),
+            DeclareLaunchArgument("grab_arm_x", default_value="0.0"),
+            DeclareLaunchArgument("grab_arm_z", default_value="0.0"),
+            DeclareLaunchArgument("grab_arm_relative", default_value="false"),
+            DeclareLaunchArgument("grab_arm_settle_sec", default_value="0.3"),
+            DeclareLaunchArgument("gripper_close_power", default_value="0.5"),
+            DeclareLaunchArgument("gripper_close_settle_sec", default_value="0.5"),
+            DeclareLaunchArgument("lift_arm_x", default_value="1.0"),
+            DeclareLaunchArgument("lift_arm_z", default_value="2.0"),
+            DeclareLaunchArgument("lift_arm_relative", default_value="false"),
+            DeclareLaunchArgument("lift_arm_settle_sec", default_value="0.3"),
+            DeclareLaunchArgument("backward_distance", default_value="0.30"),
+            DeclareLaunchArgument("backward_duration_sec", default_value="2.0"),
+            DeclareLaunchArgument("backward_publish_rate_hz", default_value="20.0"),
+            DeclareLaunchArgument("ready_arm_x", default_value="0.0"),
+            DeclareLaunchArgument("ready_arm_z", default_value="0.0"),
+            DeclareLaunchArgument("ready_arm_relative", default_value="false"),
+            DeclareLaunchArgument("ready_arm_settle_sec", default_value="0.3"),
 
             Node(
                 package="hockey_controller",
@@ -228,6 +262,23 @@ def generate_launch_description() -> LaunchDescription:
                         ),
                         "align_timeout_sec": align_timeout_sec,
                         "final_yaw_tolerance": final_yaw_tolerance,
+                        "grab_arm_x": grab_arm_x,
+                        "grab_arm_z": grab_arm_z,
+                        "grab_arm_relative": grab_arm_relative,
+                        "grab_arm_settle_sec": grab_arm_settle_sec,
+                        "gripper_close_power": gripper_close_power,
+                        "gripper_close_settle_sec": gripper_close_settle_sec,
+                        "lift_arm_x": lift_arm_x,
+                        "lift_arm_z": lift_arm_z,
+                        "lift_arm_relative": lift_arm_relative,
+                        "lift_arm_settle_sec": lift_arm_settle_sec,
+                        "backward_distance": backward_distance,
+                        "backward_duration_sec": backward_duration_sec,
+                        "backward_publish_rate_hz": backward_publish_rate_hz,
+                        "ready_arm_x": ready_arm_x,
+                        "ready_arm_z": ready_arm_z,
+                        "ready_arm_relative": ready_arm_relative,
+                        "ready_arm_settle_sec": ready_arm_settle_sec,
                     }
                 ],
             ),
