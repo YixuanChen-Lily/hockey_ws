@@ -65,9 +65,11 @@ class GripperControlServer(Node):
         )
 
         self.get_logger().info(
-            "Gripper action server ready:\n"
-            f"  action        = {self.action_name}\n"
-            f"  driver action = {self.driver_action_name}"
+            "Gripper control action server ready:\n"
+            f"  robot_id            = {self.robot_id}\n"
+            f"  action              = {self.action_name}\n"
+            f"  driver action       = {self.driver_action_name}\n"
+            f"  driver wait timeout = {self.driver_wait_timeout_sec} s"
         )
 
     def _goal_callback(
@@ -96,6 +98,10 @@ class GripperControlServer(Node):
                 return GoalResponse.REJECT
             self._goal_active = True
 
+        self.get_logger().info(
+            "Accepted gripper goal: "
+            f"target_state={request.target_state}, power={request.power:.2f}."
+        )
         return GoalResponse.ACCEPT
 
     def _cancel_callback(self, goal_handle) -> CancelResponse:
@@ -108,6 +114,10 @@ class GripperControlServer(Node):
         driver_goal_handle: Optional[Any] = None
 
         try:
+            self.get_logger().info(
+                "Waiting for RoboMaster gripper action "
+                f"{self.driver_action_name}."
+            )
             if not self._driver_client.wait_for_server(
                 timeout_sec=self.driver_wait_timeout_sec
             ):
@@ -117,11 +127,17 @@ class GripperControlServer(Node):
                     "RoboMaster gripper action unavailable: "
                     f"{self.driver_action_name}"
                 )
+                self.get_logger().error(result.message)
                 return result
 
             driver_goal = RobomasterGripperControl.Goal()
             driver_goal.target_state = int(goal_handle.request.target_state)
             driver_goal.power = float(goal_handle.request.power)
+            self.get_logger().info(
+                "Forwarding gripper goal to RoboMaster driver: "
+                f"target_state={driver_goal.target_state}, "
+                f"power={driver_goal.power:.2f}."
+            )
 
             response_event = Event()
             result_event = Event()
@@ -138,12 +154,20 @@ class GripperControlServer(Node):
                     feedback_message.feedback.current_state
                 )
                 goal_handle.publish_feedback(feedback)
+                self.get_logger().info(
+                    "Gripper state feedback: "
+                    f"current_state={feedback.current_state}."
+                )
 
             def driver_result_callback(future) -> None:
                 try:
                     wrapped_result = future.result()
                     state["status"] = wrapped_result.status
                     state["result"] = wrapped_result.result
+                    self.get_logger().info(
+                        "RoboMaster gripper result received: "
+                        f"status={state['status']}."
+                    )
                 except Exception as exception:
                     state["error"] = str(exception)
                 finally:
@@ -154,7 +178,11 @@ class GripperControlServer(Node):
                     state["goal_handle"] = future.result()
                     if not state["goal_handle"].accepted:
                         state["error"] = "RoboMaster gripper goal was rejected"
+                        self.get_logger().error(state["error"])
                     else:
+                        self.get_logger().info(
+                            "RoboMaster driver accepted gripper goal."
+                        )
                         state["goal_handle"].get_result_async().add_done_callback(
                             driver_result_callback
                         )
@@ -230,6 +258,10 @@ class GripperControlServer(Node):
                     "RoboMaster gripper control failed with status "
                     f"{state['status']}."
                 )
+            if result.success:
+                self.get_logger().info(result.message)
+            else:
+                self.get_logger().warning(result.message)
             return result
 
         except Exception as exception:

@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -11,7 +12,10 @@ def generate_launch_description() -> LaunchDescription:
     target_pose_topic = LaunchConfiguration("target_pose_topic")
 
     safe_qp_solver = LaunchConfiguration("safe_qp_solver")
-    safe_dynamic_robot_ids = LaunchConfiguration("safe_dynamic_robot_ids")
+    safe_dynamic_robot_ids = ParameterValue(
+        LaunchConfiguration("safe_dynamic_robot_ids"),
+        value_type=str,
+    )
     safe_dynamic_obstacles_required = LaunchConfiguration(
         "safe_dynamic_obstacles_required"
     )
@@ -133,18 +137,33 @@ def generate_launch_description() -> LaunchDescription:
             # Stick pickup is part of this mission.
             DeclareLaunchArgument("use_manipulator", default_value="true"),
             DeclareLaunchArgument("grab_arm_x", default_value="0.0"),
-            DeclareLaunchArgument("grab_arm_z", default_value="0.0"),
+            DeclareLaunchArgument("grab_arm_z", default_value="1.0"),
             DeclareLaunchArgument("grab_arm_relative", default_value="false"),
             DeclareLaunchArgument("grab_arm_settle_sec", default_value="0.3"),
-            DeclareLaunchArgument("gripper_close_power", default_value="0.5"),
-            DeclareLaunchArgument("gripper_close_settle_sec", default_value="0.5"),
+            # Step 2: close the gripper (power must remain in [0, 1]).
+            DeclareLaunchArgument(
+                "gripper_close_power",
+                default_value="0.5",
+            ),
+            DeclareLaunchArgument(
+                "gripper_close_settle_sec",
+                default_value="0.5",
+            ),
+            # Step 3: lift the arm while retaining the closed gripper.
             DeclareLaunchArgument("lift_arm_x", default_value="1.0"),
             DeclareLaunchArgument("lift_arm_z", default_value="2.0"),
             DeclareLaunchArgument("lift_arm_relative", default_value="false"),
             DeclareLaunchArgument("lift_arm_settle_sec", default_value="0.3"),
             DeclareLaunchArgument("backward_distance", default_value="0.30"),
-            DeclareLaunchArgument("backward_duration_sec", default_value="2.0"),
-            DeclareLaunchArgument("backward_publish_rate_hz", default_value="20.0"),
+            DeclareLaunchArgument(
+                "backward_duration_sec",
+                default_value="2.0",
+            ),
+            DeclareLaunchArgument(
+                "backward_publish_rate_hz",
+                default_value="20.0",
+            ),
+            # Step 5: lower the arm into the ready-to-hit pose.
             DeclareLaunchArgument("ready_arm_x", default_value="0.0"),
             DeclareLaunchArgument("ready_arm_z", default_value="0.0"),
             DeclareLaunchArgument("ready_arm_relative", default_value="false"),
@@ -262,6 +281,7 @@ def generate_launch_description() -> LaunchDescription:
                         ),
                         "align_timeout_sec": align_timeout_sec,
                         "final_yaw_tolerance": final_yaw_tolerance,
+                        "use_manipulator": use_manipulator,
                         "grab_arm_x": grab_arm_x,
                         "grab_arm_z": grab_arm_z,
                         "grab_arm_relative": grab_arm_relative,

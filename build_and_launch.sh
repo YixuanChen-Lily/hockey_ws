@@ -1,20 +1,11 @@
 #!/usr/bin/env bash
 xhost +
 
-docker exec -it hockey /bin/bash -lc '
-  if [ -d /opt/ros ]; then
-    for f in /opt/ros/*/setup.bash; do
-      if [ -f "$f" ]; then
-        source "$f"
-        break
-      fi
-    done
-  fi
+docker exec -it hockey /ros_entrypoint.sh /bin/bash -ic '
   cd /hockey_ws
   python3 -m pip install -r src/hockey_controller/requirements.txt
   colcon build --packages-select hockey_interfaces hockey_controller --symlink-install
   source install/setup.bash
-  ros2 pkg prefix hockey_controller
   ros2 launch hockey_controller mission.launch.py \
   robot_id:=9 \
   target_pose_topic:=/vrpn_mocap/hockey_sticks_1/pose \

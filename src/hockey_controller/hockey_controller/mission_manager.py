@@ -83,6 +83,7 @@ class MissionManager(Node):
         "safe_navigation_timeout_sec": 30.0,
         "spin_timeout_sec": 15.0,
         "action_wait_timeout_sec": 5.0,
+        "use_manipulator": True,
         "grab_arm_x": 0.0,
         "grab_arm_z": 0.0,
         "grab_arm_relative": False,
@@ -340,7 +341,10 @@ class MissionManager(Node):
         self._align_to_yaw(plan.final_yaw)
 
         self._status("PARKING_DONE")
-        self._pick_up_stick()
+        if self.use_manipulator:
+            self._pick_up_stick()
+        else:
+            self.get_logger().info("Skipping stick pickup because use_manipulator=false")
         self._status("MISSION_DONE")
 
     def _run_simple_mission(self) -> None:
@@ -511,15 +515,28 @@ class MissionManager(Node):
         Event().wait(self.gripper_close_settle_sec)
 
     def _back_up(self) -> None:
+        duration = float(self.backward_duration_sec)
+        publish_rate_hz = float(self.backward_publish_rate_hz)
+        if duration <= 0.0:
+            raise RuntimeError("backward_duration_sec must be positive")
+        if publish_rate_hz <= 0.0:
+            raise RuntimeError("backward_publish_rate_hz must be positive")
+
         twist = Twist()
-        twist.linear.x = -self.backward_distance / self.backward_duration_sec
-        start_time = monotonic()
-        while monotonic() - start_time < self.backward_duration_sec:
+        twist.linear.x = -float(self.backward_distance) / duration
+        self.get_logger().info(
+            "Backing up: "
+            f"distance={float(self.backward_distance):.3f}m, "
+            f"duration={duration:.2f}s, velocity={twist.linear.x:.3f}m/s."
+        )
+        start = monotonic()
+        while monotonic() - start < duration:
             if self._stop_requested:
                 raise RuntimeError("Mission stopped during backup")
             self.cmd_vel_pub.publish(twist)
-            Event().wait(1.0 / self.backward_publish_rate_hz)
+            Event().wait(1.0 / publish_rate_hz)
         self._stop_robot()
+        self.get_logger().info("Backing up completed.")
 
     def _set_safe_nav_parameters(self, values) -> None:
         if not self.safe_param_client.wait_for_service(
