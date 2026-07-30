@@ -55,6 +55,10 @@ setup(
                 "hockey_controller.spin_server:main"
             ),
             (
+                "shooting_server = "
+                "hockey_controller.shooting_server:main"
+            ),
+            (
                 "mission_manager = "
                 "hockey_controller.mission_manager:main"
             ),

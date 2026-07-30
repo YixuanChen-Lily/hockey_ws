@@ -1,0 +1,20 @@
+string role
+float64 offset_x
+float64 offset_y
+float64 target_radius
+float64 approach_distance
+float64 shooting_angle_offset
+float64 linear_speed
+float64 angular_speed
+int32 spin_rotations
+float64 timeout_sec
+int32 max_attempts
+---
+bool success
+string message
+float64 final_puck_distance
+int32 attempts
+---
+string state
+float64 puck_distance_to_target
+int32 attempts

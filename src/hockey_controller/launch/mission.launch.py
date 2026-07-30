@@ -10,6 +10,8 @@ def generate_launch_description() -> LaunchDescription:
     namespace = LaunchConfiguration("namespace")
     robot_id = LaunchConfiguration("robot_id")
     target_pose_topic = LaunchConfiguration("target_pose_topic")
+    puck_pose_topic = LaunchConfiguration("puck_pose_topic")
+    goal_pose_topic = LaunchConfiguration("goal_pose_topic")
 
     safe_qp_solver = LaunchConfiguration("safe_qp_solver")
     safe_dynamic_robot_ids = ParameterValue(
@@ -52,6 +54,19 @@ def generate_launch_description() -> LaunchDescription:
     align_timeout_sec = LaunchConfiguration("align_timeout_sec")
     final_yaw_tolerance = LaunchConfiguration("final_yaw_tolerance")
 
+    shooting_enabled = LaunchConfiguration("shooting_enabled")
+    shooting_role = LaunchConfiguration("shooting_role")
+    shooting_offset_x = LaunchConfiguration("shooting_offset_x")
+    shooting_offset_y = LaunchConfiguration("shooting_offset_y")
+    shooting_target_radius = LaunchConfiguration("shooting_target_radius")
+    shooting_approach_distance = LaunchConfiguration("shooting_approach_distance")
+    shooting_angle_offset = LaunchConfiguration("shooting_angle_offset")
+    shooting_linear_speed = LaunchConfiguration("shooting_linear_speed")
+    shooting_angular_speed = LaunchConfiguration("shooting_angular_speed")
+    shooting_spin_rotations = LaunchConfiguration("shooting_spin_rotations")
+    shooting_timeout_sec = LaunchConfiguration("shooting_timeout_sec")
+    shooting_max_attempts = LaunchConfiguration("shooting_max_attempts")
+
     use_manipulator = LaunchConfiguration("use_manipulator")
     grab_arm_x = LaunchConfiguration("grab_arm_x")
     grab_arm_z = LaunchConfiguration("grab_arm_z")
@@ -79,6 +94,14 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "target_pose_topic",
                 default_value="/vrpn_mocap/hockey_sticks_1/pose",
+            ),
+            DeclareLaunchArgument(
+                "puck_pose_topic",
+                default_value="/vrpn_mocap/puck/pose",
+            ),
+            DeclareLaunchArgument(
+                "goal_pose_topic",
+                default_value="/vrpn_mocap/goal/pose",
             ),
 
             # QP solver backend for the linearized CLF-CBF-QP controller.
@@ -133,6 +156,20 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument("align_timeout_sec", default_value="8.0"),
             DeclareLaunchArgument("final_yaw_tolerance", default_value="0.08"),
+
+            # Optional shooting phase after parking/pickup.
+            DeclareLaunchArgument("shooting_enabled", default_value="false"),
+            DeclareLaunchArgument("shooting_role", default_value="shooter"),
+            DeclareLaunchArgument("shooting_offset_x", default_value="0.0"),
+            DeclareLaunchArgument("shooting_offset_y", default_value="0.0"),
+            DeclareLaunchArgument("shooting_target_radius", default_value="0.20"),
+            DeclareLaunchArgument("shooting_approach_distance", default_value="0.35"),
+            DeclareLaunchArgument("shooting_angle_offset", default_value="0.0"),
+            DeclareLaunchArgument("shooting_linear_speed", default_value="0.3"),
+            DeclareLaunchArgument("shooting_angular_speed", default_value="1.5"),
+            DeclareLaunchArgument("shooting_spin_rotations", default_value="1"),
+            DeclareLaunchArgument("shooting_timeout_sec", default_value="30.0"),
+            DeclareLaunchArgument("shooting_max_attempts", default_value="3"),
 
             # Stick pickup is part of this mission.
             DeclareLaunchArgument("use_manipulator", default_value="true"),
@@ -221,6 +258,23 @@ def generate_launch_description() -> LaunchDescription:
             ),
             Node(
                 package="hockey_controller",
+                executable="shooting_server",
+                name="shooting_server",
+                namespace=namespace,
+                output="screen",
+                condition=IfCondition(shooting_enabled),
+                parameters=[
+                    {
+                        "robot_id": robot_id,
+                        "puck_pose_topic": puck_pose_topic,
+                        "goal_pose_topic": goal_pose_topic,
+                        "safe_navigation_action": "safe_navigate_to_point",
+                        "spin_action": "spin",
+                    }
+                ],
+            ),
+            Node(
+                package="hockey_controller",
                 executable="move_arm_server",
                 name="move_arm_server",
                 namespace=namespace,
@@ -281,6 +335,21 @@ def generate_launch_description() -> LaunchDescription:
                         ),
                         "align_timeout_sec": align_timeout_sec,
                         "final_yaw_tolerance": final_yaw_tolerance,
+                        "shooting_action": "shoot_puck",
+                        "shooting_enabled": shooting_enabled,
+                        "shooting_role": shooting_role,
+                        "shooting_offset_x": shooting_offset_x,
+                        "shooting_offset_y": shooting_offset_y,
+                        "shooting_target_radius": shooting_target_radius,
+                        "shooting_approach_distance": (
+                            shooting_approach_distance
+                        ),
+                        "shooting_angle_offset": shooting_angle_offset,
+                        "shooting_linear_speed": shooting_linear_speed,
+                        "shooting_angular_speed": shooting_angular_speed,
+                        "shooting_spin_rotations": shooting_spin_rotations,
+                        "shooting_timeout_sec": shooting_timeout_sec,
+                        "shooting_max_attempts": shooting_max_attempts,
                         "use_manipulator": use_manipulator,
                         "grab_arm_x": grab_arm_x,
                         "grab_arm_z": grab_arm_z,
