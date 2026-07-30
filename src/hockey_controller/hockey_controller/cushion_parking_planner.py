@@ -23,11 +23,14 @@ class ParkingPlannerConfig:
     front_clearance: float = 0.35
     desired_normal_distance: float = 0.35
     tangential_offset: float = 0.0
+    parking_lateral_offset: float = 0.0
     pre_park_backoff: float = 0.40
     robot_safety_radius: float = 0.20
     stick_safety_extension: float = 0.0
     safety_margin: float = 0.10
     circle_spacing: float = 0.20
+    obstacle_axis: str = "local_x"
+    obstacle_radius_override: float = -1.0
     field_min_x: Optional[float] = None
     field_max_x: Optional[float] = None
     field_min_y: Optional[float] = None
@@ -61,6 +64,15 @@ def cushion_axes(
     else:
         n = (sign * left_normal[0], sign * left_normal[1])
     return t, n
+
+
+def cushion_lateral_axis(geometry: CushionGeometry) -> Tuple[float, float]:
+    """Return the positive local axis perpendicular to the selected front axis."""
+    t = (math.cos(geometry.yaw), math.sin(geometry.yaw))
+    local_y = (-math.sin(geometry.yaw), math.cos(geometry.yaw))
+    if geometry.front_axis == "x":
+        return local_y
+    return t
 
 
 def classify_front_side(
@@ -97,17 +109,25 @@ def parking_points(
     config: ParkingPlannerConfig,
 ) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
     t, n = cushion_axes(geometry)
+    lateral = cushion_lateral_axis(geometry)
     # Positive front normal n points toward the desired parking side.
     # Therefore both final and pre-park points are placed at +n from the
     # cushion center; pre-park is farther out along +n for a straight approach.
-    final_park_point = (
+    # parking_lateral_offset moves the parking slot along the cushion local
+    # axis perpendicular to the selected parking front axis.
+    final_x = (
         geometry.center_x
         + config.desired_normal_distance * n[0]
-        + config.tangential_offset * t[0],
+        + config.tangential_offset * t[0]
+        + config.parking_lateral_offset * lateral[0]
+    )
+    final_y = (
         geometry.center_y
         + config.desired_normal_distance * n[1]
-        + config.tangential_offset * t[1],
+        + config.tangential_offset * t[1]
+        + config.parking_lateral_offset * lateral[1]
     )
+    final_park_point = (final_x, final_y)
     pre_park_point = (
         final_park_point[0] + config.pre_park_backoff * n[0],
         final_park_point[1] + config.pre_park_backoff * n[1],
@@ -119,49 +139,122 @@ def parking_points(
 def bypass_waypoints(
     geometry: CushionGeometry,
     config: ParkingPlannerConfig,
+) -> Tuple[
+    Tuple[Tuple[float, float], Tuple[float, float]],
+    Tuple[Tuple[float, float], Tuple[float, float]],
+]:
+    axis, axis_length, _ = cushion_obstacle_axis(geometry, config)
+    _, n = cushion_axes(geometry)
+    negative_endpoint = (
+        geometry.center_x - 0.5 * axis_length * axis[0],
+        geometry.center_y - 0.5 * axis_length * axis[1],
+    )
+    positive_endpoint = (
+        geometry.center_x + 0.5 * axis_length * axis[0],
+        geometry.center_y + 0.5 * axis_length * axis[1],
+    )
+    negative_route = _bypass_route_around_endpoint(
+        negative_endpoint,
+        -1.0,
+        axis,
+        n,
+        config,
+    )
+    positive_route = _bypass_route_around_endpoint(
+        positive_endpoint,
+        1.0,
+        axis,
+        n,
+        config,
+    )
+    return negative_route, positive_route
+
+
+def _bypass_route_around_endpoint(
+    endpoint: Tuple[float, float],
+    side_sign: float,
+    axis: Tuple[float, float],
+    n: Tuple[float, float],
+    config: ParkingPlannerConfig,
 ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
-    t, n = cushion_axes(geometry)
-    left_endpoint, right_endpoint = cushion_endpoints(geometry)
-    left_waypoint = (
-        left_endpoint[0] - config.side_clearance * t[0]
-        + config.front_clearance * n[0],
-        left_endpoint[1] - config.side_clearance * t[1]
-        + config.front_clearance * n[1],
+    outside_endpoint = (
+        endpoint[0] + side_sign * config.side_clearance * axis[0],
+        endpoint[1] + side_sign * config.side_clearance * axis[1],
     )
-    right_waypoint = (
-        right_endpoint[0] + config.side_clearance * t[0]
-        + config.front_clearance * n[0],
-        right_endpoint[1] + config.side_clearance * t[1]
-        + config.front_clearance * n[1],
+    back_side_waypoint = (
+        outside_endpoint[0] - config.front_clearance * n[0],
+        outside_endpoint[1] - config.front_clearance * n[1],
     )
-    return left_waypoint, right_waypoint
+    front_side_waypoint = (
+        outside_endpoint[0] + config.front_clearance * n[0],
+        outside_endpoint[1] + config.front_clearance * n[1],
+    )
+    return back_side_waypoint, front_side_waypoint
 
 
 def cushion_cbf_circles(
     geometry: CushionGeometry,
     config: ParkingPlannerConfig,
 ) -> Tuple[CircularObstacle, ...]:
-    t, _ = cushion_axes(geometry)
-    radius = (
-        0.5 * geometry.width
-        + config.robot_safety_radius
-        + config.stick_safety_extension
-        + config.safety_margin
-    )
+    axis, axis_length, _ = cushion_obstacle_axis(geometry, config)
+    radius = cushion_cbf_radius(geometry, config)
     spacing = max(config.circle_spacing, 1e-3)
-    count = max(2, int(math.ceil(geometry.length / spacing)) + 1)
+    count = max(2, int(math.ceil(axis_length / spacing)) + 1)
     circles: List[CircularObstacle] = []
     for index in range(count):
         alpha = -0.5 + index / (count - 1)
-        offset = alpha * geometry.length
+        offset = alpha * axis_length
         circles.append(
             CircularObstacle(
-                geometry.center_x + offset * t[0],
-                geometry.center_y + offset * t[1],
+                geometry.center_x + offset * axis[0],
+                geometry.center_y + offset * axis[1],
                 radius,
             )
         )
     return tuple(circles)
+
+
+def cushion_radius_layers(
+    geometry: CushionGeometry,
+    config: ParkingPlannerConfig,
+) -> Tuple[float, float, float, float]:
+    _, _, cross_width = cushion_obstacle_axis(geometry, config)
+    physical_radius = 0.5 * cross_width
+    robot_inflated_radius = physical_radius + config.robot_safety_radius
+    stick_inflated_radius = robot_inflated_radius + config.stick_safety_extension
+    cbf_radius = cushion_cbf_radius(geometry, config)
+    return (
+        physical_radius,
+        robot_inflated_radius,
+        stick_inflated_radius,
+        cbf_radius,
+    )
+
+
+def cushion_cbf_radius(
+    geometry: CushionGeometry,
+    config: ParkingPlannerConfig,
+) -> float:
+    if config.obstacle_radius_override > 0.0:
+        return config.obstacle_radius_override
+    _, _, cross_width = cushion_obstacle_axis(geometry, config)
+    return (
+        0.5 * cross_width
+        + config.robot_safety_radius
+        + config.stick_safety_extension
+        + config.safety_margin
+    )
+
+
+def cushion_obstacle_axis(
+    geometry: CushionGeometry,
+    config: ParkingPlannerConfig,
+) -> Tuple[Tuple[float, float], float, float]:
+    t = (math.cos(geometry.yaw), math.sin(geometry.yaw))
+    local_y = (-math.sin(geometry.yaw), math.cos(geometry.yaw))
+    if config.obstacle_axis in ("local_y", "y"):
+        return local_y, geometry.width, geometry.length
+    return t, geometry.length, geometry.width
 
 
 def plan_parking_route(
@@ -204,19 +297,21 @@ def plan_parking_route(
             "already on parking side",
         )
 
-    left_waypoint, right_waypoint = bypass_waypoints(geometry, config)
-    candidates = (("left", left_waypoint), ("right", right_waypoint))
+    left_route, right_route = bypass_waypoints(geometry, config)
+    candidates = (("left", left_route), ("right", right_route))
+    safety_obstacles = tuple(cushion_obstacles) + tuple(extra_obstacles)
     valid_candidates = []
-    for side, waypoint in candidates:
-        if not _point_in_field(waypoint, config):
+    for side, route in candidates:
+        if not all(_point_in_field(waypoint, config) for waypoint in route):
             continue
-        if _inside_any_obstacle(waypoint, extra_obstacles):
+        if any(_inside_any_obstacle(waypoint, safety_obstacles) for waypoint in route):
             continue
         cost = (
-            _distance(robot_position, waypoint)
-            - _distance(waypoint, pre_park_point)
+            _distance(robot_position, route[0])
+            + _distance(route[0], route[1])
+            + _distance(route[1], pre_park_point)
         )
-        valid_candidates.append((cost, side, waypoint))
+        valid_candidates.append((cost, side, route))
 
     if not valid_candidates:
         return ParkingPlan(
@@ -230,11 +325,11 @@ def plan_parking_route(
             "no valid bypass route",
         )
 
-    _, side, waypoint = min(valid_candidates, key=lambda item: item[0])
+    _, side, route = min(valid_candidates, key=lambda item: item[0])
     return ParkingPlan(
         False,
         side,
-        (waypoint, pre_park_point, final_park_point),
+        tuple(route) + (pre_park_point, final_park_point),
         pre_park_point,
         final_park_point,
         final_yaw,

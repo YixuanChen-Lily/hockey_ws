@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import math
+import ast
 import time
+from dataclasses import dataclass
 from enum import Enum, auto
 from threading import Lock
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
@@ -17,7 +19,9 @@ from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 
 from hockey_interfaces.action import NavigateToPoint
-from hockey_controller.clf_cbf_qp import CircularObstacle, QpResult
+from hockey_controller.clf_cbf_qp import CircularObstacle
+from hockey_controller.clf_cbf_qp import DynamicCircularObstacle
+from hockey_controller.clf_cbf_qp import QpResult
 from hockey_controller.clf_cbf_qp import compute_nominal_point_velocity
 from hockey_controller.clf_cbf_qp import obstacle_arrays_valid
 from hockey_controller.clf_cbf_qp import solve_clf_cbf_qp
@@ -31,6 +35,19 @@ class SafeNavigationState(Enum):
     TRACK_GOAL = auto()
     ORIENT = auto()
     DONE = auto()
+
+
+@dataclass
+class DynamicRobotState:
+    x: float
+    y: float
+    yaw: float
+    timestamp: float
+    previous_x: Optional[float] = None
+    previous_y: Optional[float] = None
+    previous_timestamp: Optional[float] = None
+    velocity_x: float = 0.0
+    velocity_y: float = 0.0
 
 
 class SafeNavigationServer(Node):
@@ -66,7 +83,7 @@ class SafeNavigationServer(Node):
             [],
             obstacle_array_descriptor,
         )
-        self.declare_parameter("qp_solver", "osqp")
+        self.declare_parameter("qp_solver", "cvxopt")
         self.declare_parameter("qp_verbose", False)
         self.declare_parameter("diagnostic_log_period_sec", 1.0)
         self.declare_parameter("orient_gain", 2.0)
@@ -77,6 +94,16 @@ class SafeNavigationServer(Node):
         self.declare_parameter("target_orientation_offset", 0.0)
         self.declare_parameter("orient_to_target", False)
         self.declare_parameter("use_target_pose", True)
+        dynamic_ids_descriptor = ParameterDescriptor(dynamic_typing=True)
+        self.declare_parameter("dynamic_robot_ids", [], dynamic_ids_descriptor)
+        self.declare_parameter("dynamic_obstacles_required", True)
+        self.declare_parameter("dynamic_obstacle_timeout_sec", 0.5)
+        self.declare_parameter("dynamic_obstacle_velocity_filter_gain", 0.5)
+        self.declare_parameter("dynamic_obstacle_max_speed", 2.0)
+        self.declare_parameter("dynamic_controlled_robot_radius", 0.18)
+        self.declare_parameter("dynamic_robot_radius", 0.18)
+        self.declare_parameter("dynamic_robot_safety_margin", 0.10)
+        self.declare_parameter("dynamic_cbf_gain", 2.0)
 
         self.robot_id = int(self.get_parameter("robot_id").value)
         pose_topic = str(self.get_parameter("pose_topic").value)
@@ -148,6 +175,34 @@ class SafeNavigationServer(Node):
         )
         self.orient_to_target = bool(self.get_parameter("orient_to_target").value)
         self.use_target_pose = bool(self.get_parameter("use_target_pose").value)
+        self.dynamic_robot_ids = self._sanitize_dynamic_robot_ids(
+            self._parameter_int_array("dynamic_robot_ids")
+        )
+        self.dynamic_obstacles_required = bool(
+            self.get_parameter("dynamic_obstacles_required").value
+        )
+        self.dynamic_obstacle_timeout_sec = float(
+            self.get_parameter("dynamic_obstacle_timeout_sec").value
+        )
+        self.dynamic_obstacle_velocity_filter_gain = float(
+            self.get_parameter("dynamic_obstacle_velocity_filter_gain").value
+        )
+        self.dynamic_obstacle_max_speed = float(
+            self.get_parameter("dynamic_obstacle_max_speed").value
+        )
+        self.dynamic_controlled_robot_radius = float(
+            self.get_parameter("dynamic_controlled_robot_radius").value
+        )
+        self.dynamic_robot_radius = float(
+            self.get_parameter("dynamic_robot_radius").value
+        )
+        self.dynamic_robot_safety_margin = float(
+            self.get_parameter("dynamic_robot_safety_margin").value
+        )
+        self.dynamic_cbf_gain = float(
+            self.get_parameter("dynamic_cbf_gain").value
+        )
+        self._validate_dynamic_obstacle_parameters()
 
         self._pose_lock = Lock()
         self._latest_pose: Optional[Tuple[float, float, float]] = None
@@ -155,12 +210,19 @@ class SafeNavigationServer(Node):
         self._target_pose_lock = Lock()
         self._latest_target_pose: Optional[Tuple[float, float, float]] = None
         self._latest_target_pose_time = None
+        self._dynamic_obstacle_lock = Lock()
+        self._dynamic_robot_states: Dict[int, DynamicRobotState] = {}
+        self._dynamic_robot_subscriptions = {}
         self._goal_lock = Lock()
         self._goal_active = False
         self._last_linear_velocity = 0.0
         self._last_angular_velocity = 0.0
         self._last_qp_warning_time = 0.0
         self._last_diagnostic_log_time = 0.0
+        self._last_qp_solve_time_sec = 0.0
+        self._loop_count = 0
+        self._loop_rate_window_start = time.monotonic()
+        self._measured_control_rate_hz = 0.0
         self._callback_group = ReentrantCallbackGroup()
 
         self._cmd_vel_publisher = self.create_publisher(
@@ -182,6 +244,7 @@ class SafeNavigationServer(Node):
             qos_profile_sensor_data,
             callback_group=self._callback_group,
         )
+        self._reset_dynamic_robot_subscriptions(self.dynamic_robot_ids)
         self._action_server = ActionServer(
             self,
             NavigateToPoint,
@@ -204,7 +267,8 @@ class SafeNavigationServer(Node):
             f"  orient      = {self.orient_to_target}\n"
             f"  use target pose = {self.use_target_pose}\n"
             f"  obstacles enabled = {self.obstacles_enabled}\n"
-            f"  obstacles   = {len(self.obstacle_x)}"
+            f"  obstacles   = {len(self.obstacle_x)}\n"
+            f"  dynamic robots = {self.dynamic_robot_ids}"
         )
 
     def _handle_parameter_update(self, parameters) -> SetParametersResult:
@@ -269,9 +333,17 @@ class SafeNavigationServer(Node):
                         reason="target_pose_timeout_sec must be positive",
                     )
 
+            if parameter.name == "target_pose_topic":
+                if parameter.type_ != Parameter.Type.STRING:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="target_pose_topic must be a string",
+                    )
+
             if parameter.name in (
                 "clf_gain",
                 "cbf_gain",
+                "dynamic_cbf_gain",
                 "slack_weight",
                 "max_point_speed",
             ):
@@ -322,16 +394,61 @@ class SafeNavigationServer(Node):
                         reason="diagnostic_log_period_sec must be non-negative",
                     )
 
+            if parameter.name == "dynamic_obstacle_timeout_sec":
+                if parameter.type_ != Parameter.Type.DOUBLE:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="dynamic_obstacle_timeout_sec must be a float",
+                    )
+                if parameter.value <= 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="dynamic_obstacle_timeout_sec must be positive",
+                    )
+
+            if parameter.name == "dynamic_obstacle_velocity_filter_gain":
+                if parameter.type_ != Parameter.Type.DOUBLE:
+                    return SetParametersResult(
+                        successful=False,
+                        reason=(
+                            "dynamic_obstacle_velocity_filter_gain must be a float"
+                        ),
+                    )
+                if parameter.value < 0.0 or parameter.value > 1.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason=(
+                            "dynamic_obstacle_velocity_filter_gain must be in [0, 1]"
+                        ),
+                    )
+
+            if parameter.name in (
+                "dynamic_obstacle_max_speed",
+                "dynamic_controlled_robot_radius",
+                "dynamic_robot_radius",
+                "dynamic_robot_safety_margin",
+            ):
+                if parameter.type_ != Parameter.Type.DOUBLE:
+                    return SetParametersResult(
+                        successful=False,
+                        reason=f"{parameter.name} must be a float",
+                    )
+                if parameter.value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason=f"{parameter.name} must be non-negative",
+                    )
+
             if parameter.name == "qp_solver":
                 if parameter.type_ != Parameter.Type.STRING:
                     return SetParametersResult(
                         successful=False,
                         reason="qp_solver must be a string",
                     )
-                if parameter.value not in ("osqp", "active_set"):
+                if not parameter.value:
                     return SetParametersResult(
                         successful=False,
-                        reason="qp_solver must be 'osqp' or 'active_set'",
+                        reason="qp_solver must name a qpsolvers backend",
                     )
 
         updated_obstacle_x = self.obstacle_x
@@ -351,6 +468,19 @@ class SafeNavigationServer(Node):
                 return SetParametersResult(
                     successful=False,
                     reason=f"{parameter.name} must be an array of numbers",
+                )
+
+        updated_dynamic_robot_ids = self.dynamic_robot_ids
+        for parameter in parameters:
+            try:
+                if parameter.name == "dynamic_robot_ids":
+                    updated_dynamic_robot_ids = self._sanitize_dynamic_robot_ids(
+                        self._coerce_int_array(parameter.value)
+                    )
+            except (TypeError, ValueError):
+                return SetParametersResult(
+                    successful=False,
+                    reason="dynamic_robot_ids must be an array of integers",
                 )
 
         if not self._obstacle_arrays_can_update(
@@ -403,6 +533,11 @@ class SafeNavigationServer(Node):
                 self.heading_tolerance = float(parameter.value)
             elif parameter.name == "target_pose_timeout_sec":
                 self.target_pose_timeout_sec = float(parameter.value)
+            elif parameter.name == "target_pose_topic":
+                new_topic = str(parameter.value)
+                if not new_topic:
+                    new_topic = "/vrpn_mocap/hockey_sticks_1/pose"
+                self._reset_target_pose_subscription(new_topic)
             elif parameter.name == "target_offset_x":
                 self.target_offset_x = float(parameter.value)
             elif parameter.name == "target_offset_y":
@@ -413,8 +548,46 @@ class SafeNavigationServer(Node):
                 self.orient_to_target = bool(parameter.value)
             elif parameter.name == "use_target_pose":
                 self.use_target_pose = bool(parameter.value)
+            elif parameter.name == "dynamic_robot_ids":
+                self.dynamic_robot_ids = updated_dynamic_robot_ids
+                self._reset_dynamic_robot_subscriptions(self.dynamic_robot_ids)
+            elif parameter.name == "dynamic_obstacles_required":
+                self.dynamic_obstacles_required = bool(parameter.value)
+            elif parameter.name == "dynamic_obstacle_timeout_sec":
+                self.dynamic_obstacle_timeout_sec = float(parameter.value)
+            elif parameter.name == "dynamic_obstacle_velocity_filter_gain":
+                self.dynamic_obstacle_velocity_filter_gain = float(parameter.value)
+            elif parameter.name == "dynamic_obstacle_max_speed":
+                self.dynamic_obstacle_max_speed = float(parameter.value)
+            elif parameter.name == "dynamic_controlled_robot_radius":
+                self.dynamic_controlled_robot_radius = float(parameter.value)
+            elif parameter.name == "dynamic_robot_radius":
+                self.dynamic_robot_radius = float(parameter.value)
+            elif parameter.name == "dynamic_robot_safety_margin":
+                self.dynamic_robot_safety_margin = float(parameter.value)
+            elif parameter.name == "dynamic_cbf_gain":
+                self.dynamic_cbf_gain = float(parameter.value)
 
         return SetParametersResult(successful=True)
+
+    def _reset_target_pose_subscription(self, topic: str) -> None:
+        if topic == self.target_pose_topic:
+            return
+        self.destroy_subscription(self._target_pose_subscription)
+        with self._target_pose_lock:
+            self._latest_target_pose = None
+            self._latest_target_pose_time = None
+        self.target_pose_topic = topic
+        self._target_pose_subscription = self.create_subscription(
+            PoseStamped,
+            self.target_pose_topic,
+            self._target_pose_callback,
+            qos_profile_sensor_data,
+            callback_group=self._callback_group,
+        )
+        self.get_logger().info(
+            f"Updated target pose subscription: {self.target_pose_topic}"
+        )
 
     def _validate_initial_parameters(self) -> None:
         positive_values = {
@@ -444,11 +617,55 @@ class SafeNavigationServer(Node):
                 "equal length and non-negative radii"
             )
 
+    def _validate_dynamic_obstacle_parameters(self) -> None:
+        positive_values = {
+            "dynamic_obstacle_timeout_sec": self.dynamic_obstacle_timeout_sec,
+            "dynamic_cbf_gain": self.dynamic_cbf_gain,
+        }
+        for name, value in positive_values.items():
+            if value <= 0.0:
+                raise ValueError(f"{name} must be positive")
+        non_negative_values = {
+            "dynamic_obstacle_max_speed": self.dynamic_obstacle_max_speed,
+            "dynamic_controlled_robot_radius": (
+                self.dynamic_controlled_robot_radius
+            ),
+            "dynamic_robot_radius": self.dynamic_robot_radius,
+            "dynamic_robot_safety_margin": self.dynamic_robot_safety_margin,
+        }
+        for name, value in non_negative_values.items():
+            if value < 0.0:
+                raise ValueError(f"{name} must be non-negative")
+        if not 0.0 <= self.dynamic_obstacle_velocity_filter_gain <= 1.0:
+            raise ValueError(
+                "dynamic_obstacle_velocity_filter_gain must be in [0, 1]"
+            )
+
     def _parameter_array(self, name: str) -> List[float]:
         return self._coerce_float_array(self.get_parameter(name).value)
 
+    def _parameter_int_array(self, name: str) -> List[int]:
+        return self._coerce_int_array(self.get_parameter(name).value)
+
     def _coerce_float_array(self, value) -> List[float]:
+        if isinstance(value, str):
+            value = ast.literal_eval(value)
         return [float(item) for item in value]
+
+    def _coerce_int_array(self, value) -> List[int]:
+        if isinstance(value, str):
+            value = ast.literal_eval(value)
+        return [int(item) for item in value]
+
+    def _sanitize_dynamic_robot_ids(self, robot_ids: List[int]) -> List[int]:
+        sanitized = []
+        for robot_id in robot_ids:
+            if robot_id == self.robot_id or robot_id in sanitized:
+                continue
+            if robot_id <= 0:
+                continue
+            sanitized.append(robot_id)
+        return sanitized
 
     def _obstacle_arrays_valid(
         self,
@@ -494,6 +711,94 @@ class SafeNavigationServer(Node):
             )
             self._latest_target_pose_time = self.get_clock().now()
 
+    def _reset_dynamic_robot_subscriptions(self, robot_ids: List[int]) -> None:
+        for subscription in self._dynamic_robot_subscriptions.values():
+            self.destroy_subscription(subscription)
+        self._dynamic_robot_subscriptions = {}
+        with self._dynamic_obstacle_lock:
+            self._dynamic_robot_states = {}
+
+        for robot_id in robot_ids:
+            topic = f"/vrpn_mocap/dji_robot_{robot_id}/pose"
+            self._dynamic_robot_subscriptions[robot_id] = self.create_subscription(
+                PoseStamped,
+                topic,
+                self._make_dynamic_robot_pose_callback(robot_id),
+                qos_profile_sensor_data,
+                callback_group=self._callback_group,
+            )
+        if robot_ids:
+            self.get_logger().info(
+                f"Dynamic robot obstacle subscriptions: {robot_ids}"
+            )
+
+    def _make_dynamic_robot_pose_callback(self, robot_id: int):
+        def callback(message: PoseStamped) -> None:
+            self._dynamic_robot_pose_callback(robot_id, message)
+
+        return callback
+
+    def _dynamic_robot_pose_callback(
+        self,
+        robot_id: int,
+        message: PoseStamped,
+    ) -> None:
+        pose = message.pose
+        x = float(pose.position.x)
+        y = float(pose.position.y)
+        yaw = yaw_from_quaternion(pose.orientation)
+        now = time.monotonic()
+        if not all(math.isfinite(value) for value in (x, y, yaw)):
+            return
+
+        with self._dynamic_obstacle_lock:
+            previous = self._dynamic_robot_states.get(robot_id)
+            if previous is None:
+                self._dynamic_robot_states[robot_id] = DynamicRobotState(
+                    x=x,
+                    y=y,
+                    yaw=yaw,
+                    timestamp=now,
+                )
+                return
+
+            velocity_x = previous.velocity_x
+            velocity_y = previous.velocity_y
+            dt = now - previous.timestamp
+            if 1e-3 <= dt <= self.dynamic_obstacle_timeout_sec:
+                raw_velocity_x = (x - previous.x) / dt
+                raw_velocity_y = (y - previous.y) / dt
+                raw_speed = math.hypot(raw_velocity_x, raw_velocity_y)
+                if math.isfinite(raw_speed):
+                    if (
+                        self.dynamic_obstacle_max_speed > 0.0
+                        and raw_speed > self.dynamic_obstacle_max_speed
+                    ):
+                        scale = self.dynamic_obstacle_max_speed / raw_speed
+                        raw_velocity_x *= scale
+                        raw_velocity_y *= scale
+                    gain = self.dynamic_obstacle_velocity_filter_gain
+                    velocity_x = (
+                        gain * raw_velocity_x
+                        + (1.0 - gain) * previous.velocity_x
+                    )
+                    velocity_y = (
+                        gain * raw_velocity_y
+                        + (1.0 - gain) * previous.velocity_y
+                    )
+
+            self._dynamic_robot_states[robot_id] = DynamicRobotState(
+                x=x,
+                y=y,
+                yaw=yaw,
+                timestamp=now,
+                previous_x=previous.x,
+                previous_y=previous.y,
+                previous_timestamp=previous.timestamp,
+                velocity_x=velocity_x,
+                velocity_y=velocity_y,
+            )
+
     def _goal_callback(self, request: NavigateToPoint.Goal) -> GoalResponse:
         values = (
             request.target_x,
@@ -536,9 +841,11 @@ class SafeNavigationServer(Node):
         locked_goal_x = None
         locked_goal_y = None
         locked_desired_final_yaw = None
+        next_tick_time = time.monotonic()
 
         try:
             while rclpy.ok():
+                tick_start_time = time.monotonic()
                 if goal_handle.is_cancel_requested:
                     self._stop_robot()
                     goal_handle.canceled()
@@ -705,7 +1012,13 @@ class SafeNavigationServer(Node):
                     self.get_logger().info(result.message)
                     return result
 
-                time.sleep(control_period)
+                self._record_loop_timing(tick_start_time)
+                next_tick_time += control_period
+                sleep_duration = max(0.0, next_tick_time - time.monotonic())
+                if sleep_duration <= 0.0:
+                    next_tick_time = time.monotonic()
+                else:
+                    time.sleep(sleep_duration)
 
             self._stop_robot()
             goal_handle.abort()
@@ -745,6 +1058,11 @@ class SafeNavigationServer(Node):
             goal_x,
             goal_y,
         )
+        dynamic_obstacles = self._get_dynamic_obstacles()
+        if dynamic_obstacles is None:
+            self._log_qp_failure("stale required dynamic obstacle data")
+            return None
+        qp_start_time = time.monotonic()
         qp_result = self._solve_clf_cbf_qp(
             point_x,
             point_y,
@@ -752,7 +1070,9 @@ class SafeNavigationServer(Node):
             goal_y,
             u_nom_x,
             u_nom_y,
+            dynamic_obstacles,
         )
+        qp_solve_time_sec = time.monotonic() - qp_start_time
         if not qp_result.success:
             self._log_qp_failure(qp_result.status)
             return None
@@ -770,6 +1090,7 @@ class SafeNavigationServer(Node):
                 yaw,
             )
         )
+        self._last_qp_solve_time_sec = qp_solve_time_sec
         self._log_qp_diagnostics(qp_result, u_nom_x, u_nom_y)
 
         desired_linear_velocity = clamp(
@@ -823,6 +1144,7 @@ class SafeNavigationServer(Node):
         goal_y: float,
         u_nom_x: float,
         u_nom_y: float,
+        dynamic_obstacles: List[DynamicCircularObstacle],
     ) -> QpResult:
         try:
             return solve_clf_cbf_qp(
@@ -839,6 +1161,8 @@ class SafeNavigationServer(Node):
                 self.max_point_speed,
                 self.qp_solver,
                 self.qp_verbose,
+                dynamic_obstacles,
+                self.dynamic_cbf_gain,
             )
         except Exception as exception:
             return QpResult(success=False, status=f"exception: {exception}")
@@ -886,6 +1210,57 @@ class SafeNavigationServer(Node):
             )
         return obstacles
 
+    def _get_dynamic_obstacles(self) -> Optional[List[DynamicCircularObstacle]]:
+        if not self.dynamic_robot_ids:
+            return []
+
+        now = time.monotonic()
+        obstacles = []
+        stale_ids = []
+        with self._dynamic_obstacle_lock:
+            states = {
+                robot_id: self._dynamic_robot_states.get(robot_id)
+                for robot_id in self.dynamic_robot_ids
+            }
+
+        for robot_id, state in states.items():
+            if state is None:
+                stale_ids.append(robot_id)
+                continue
+            age = now - state.timestamp
+            if age > self.dynamic_obstacle_timeout_sec:
+                stale_ids.append(robot_id)
+                continue
+            values = (
+                state.x,
+                state.y,
+                state.velocity_x,
+                state.velocity_y,
+            )
+            if not all(math.isfinite(value) for value in values):
+                self._log_qp_failure(
+                    f"invalid dynamic obstacle state for robot {robot_id}"
+                )
+                return None
+            obstacles.append(
+                DynamicCircularObstacle(
+                    state.x,
+                    state.y,
+                    state.velocity_x,
+                    state.velocity_y,
+                    self.dynamic_controlled_robot_radius
+                    + self.dynamic_robot_radius
+                    + self.dynamic_robot_safety_margin,
+                )
+            )
+
+        if stale_ids and self.dynamic_obstacles_required:
+            self._log_qp_failure(
+                f"stale dynamic obstacle data for robots {stale_ids}"
+            )
+            return None
+        return obstacles
+
     def _log_qp_failure(self, status: str) -> None:
         now = time.monotonic()
         if now - self._last_qp_warning_time < 1.0:
@@ -905,17 +1280,37 @@ class SafeNavigationServer(Node):
         if now - self._last_diagnostic_log_time < self.diagnostic_log_period_sec:
             return
         self._last_diagnostic_log_time = now
-        min_h = min((cbf.h for cbf in result.cbfs), default=math.inf)
+        min_static_h = min((cbf.h for cbf in result.cbfs), default=math.inf)
+        min_dynamic_h = min(
+            (cbf.h for cbf in result.dynamic_cbfs),
+            default=math.inf,
+        )
         clf_value = result.clf.v if result.clf is not None else math.nan
         self.get_logger().info(
             "CLF-CBF-QP: "
             f"status={result.status}, "
+            f"requested_rate={self.control_rate_hz:.1f}Hz, "
+            f"measured_rate={self._measured_control_rate_hz:.1f}Hz, "
+            f"qp_solve={1000.0 * self._last_qp_solve_time_sec:.1f}ms, "
+            f"static_obstacles={len(result.cbfs)}, "
+            f"dynamic_obstacles={len(result.dynamic_cbfs)}, "
             f"V={clf_value:.4f}, "
             f"delta={result.delta:.4f}, "
-            f"min_h={min_h:.4f}, "
+            f"min_static_h={min_static_h:.4f}, "
+            f"min_dynamic_h={min_dynamic_h:.4f}, "
             f"u_nom=({u_nom_x:.3f}, {u_nom_y:.3f}), "
             f"u_safe=({result.u_x:.3f}, {result.u_y:.3f})"
         )
+
+    def _record_loop_timing(self, tick_start_time: float) -> None:
+        del tick_start_time
+        self._loop_count += 1
+        now = time.monotonic()
+        elapsed = now - self._loop_rate_window_start
+        if elapsed >= max(self.diagnostic_log_period_sec, 1.0):
+            self._measured_control_rate_hz = self._loop_count / elapsed
+            self._loop_count = 0
+            self._loop_rate_window_start = now
 
     def _control_point(
         self,

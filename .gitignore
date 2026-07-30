@@ -10,3 +10,6 @@ __pycache__/
 # Local YASMIN demo packages
 src/yasmin_action_fsm/
 src/yasmin_action_interfaces/
+
+
+src/hockey_controller/parking_plot.png
