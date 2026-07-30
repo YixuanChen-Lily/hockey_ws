@@ -19,6 +19,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from hockey_interfaces.action import NavigateToPoint
+from hockey_interfaces.action import ShootPuck
 from hockey_interfaces.action import Spin
 try:
     from hockey_interfaces.action import GripperControl
@@ -45,6 +46,7 @@ class MissionManager(Node):
         "navigation_action": "navigate_to_point",
         "safe_navigation_action": "safe_navigate_to_point",
         "spin_action": "spin",
+        "shooting_action": "shoot_puck",
         "arm_action": "control_arm",
         "gripper_action": "control_gripper",
         "robot_id": 1,
@@ -83,6 +85,18 @@ class MissionManager(Node):
         "safe_navigation_timeout_sec": 30.0,
         "spin_timeout_sec": 15.0,
         "action_wait_timeout_sec": 5.0,
+        "shooting_enabled": False,
+        "shooting_role": "shooter",
+        "shooting_offset_x": 0.0,
+        "shooting_offset_y": 0.0,
+        "shooting_target_radius": 0.20,
+        "shooting_approach_distance": 0.35,
+        "shooting_angle_offset": 0.0,
+        "shooting_linear_speed": 0.3,
+        "shooting_angular_speed": 1.5,
+        "shooting_spin_rotations": 1,
+        "shooting_timeout_sec": 30.0,
+        "shooting_max_attempts": 3,
         "use_manipulator": True,
         "grab_arm_x": 0.0,
         "grab_arm_z": 0.0,
@@ -176,6 +190,12 @@ class MissionManager(Node):
             self,
             Spin,
             self.spin_action,
+            callback_group=self._group,
+        )
+        self.shooting_client = ActionClient(
+            self,
+            ShootPuck,
+            self.shooting_action,
             callback_group=self._group,
         )
         self.arm_client = (
@@ -345,6 +365,8 @@ class MissionManager(Node):
             self._pick_up_stick()
         else:
             self.get_logger().info("Skipping stick pickup because use_manipulator=false")
+        if self.shooting_enabled:
+            self._shoot_puck()
         self._status("MISSION_DONE")
 
     def _run_simple_mission(self) -> None:
@@ -409,6 +431,22 @@ class MissionManager(Node):
         goal.angular_speed = self.angular_speed
         goal.timeout_sec = self.spin_timeout_sec
         self._send_goal(self.spin_client, goal, self._spin_feedback)
+
+    def _shoot_puck(self) -> None:
+        self._status("SHOOTING")
+        goal = ShootPuck.Goal()
+        goal.role = self.shooting_role
+        goal.offset_x = self.shooting_offset_x
+        goal.offset_y = self.shooting_offset_y
+        goal.target_radius = self.shooting_target_radius
+        goal.approach_distance = self.shooting_approach_distance
+        goal.shooting_angle_offset = self.shooting_angle_offset
+        goal.linear_speed = self.shooting_linear_speed
+        goal.angular_speed = self.shooting_angular_speed
+        goal.spin_rotations = self.shooting_spin_rotations
+        goal.timeout_sec = self.shooting_timeout_sec
+        goal.max_attempts = self.shooting_max_attempts
+        self._send_goal(self.shooting_client, goal, self._shooting_feedback)
 
     def _send_goal(self, client, goal, feedback_callback) -> None:
         if not client.wait_for_server(timeout_sec=self.action_wait_timeout_sec):
@@ -624,6 +662,14 @@ class MissionManager(Node):
         feedback = feedback_message.feedback
         self.get_logger().info(
             f"spin: {feedback.state}, remaining={feedback.rotation_remaining:.2f}"
+        )
+
+    def _shooting_feedback(self, feedback_message) -> None:
+        feedback = feedback_message.feedback
+        self.get_logger().info(
+            "shooting: "
+            f"{feedback.state}, distance={feedback.puck_distance_to_target:.2f}, "
+            f"attempts={feedback.attempts}"
         )
 
     def _arm_feedback(self, feedback_message) -> None:

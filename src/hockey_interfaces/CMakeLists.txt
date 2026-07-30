@@ -10,6 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GoToPointAndSpin.action"
   "action/MoveArm.action"
   "action/NavigateToPoint.action"
+  "action/ShootPuck.action"
   "action/Spin.action"
   DEPENDENCIES builtin_interfaces
 )
