@@ -74,47 +74,51 @@ class MissionManager(Node):
         "final_approach_speed": 0.12,
         "final_approach_point_gain": 0.35,
         "align_gain": 2.0,
-        "align_timeout_sec": 8.0,
+        "align_timeout_sec": 150.0,
         "final_yaw_tolerance": 0.08,
-        "pose_timeout_sec": 1.0,
+        "pose_timeout_sec": 150.0,
         "visualization_frame": "map",
         "rotations": 1,
         "linear_speed": 0.4,
         "angular_speed": 0.8,
-        "navigation_timeout_sec": 30.0,
-        "safe_navigation_timeout_sec": 30.0,
-        "spin_timeout_sec": 15.0,
-        "action_wait_timeout_sec": 5.0,
+        "navigation_timeout_sec": 150.0,
+        "safe_navigation_timeout_sec": 150.0,
+        "spin_timeout_sec": 150.0,
+        "action_wait_timeout_sec": 150.0,
         "shooting_enabled": False,
         "shooting_role": "shooter",
         "shooting_offset_x": 0.0,
         "shooting_offset_y": 0.0,
         "shooting_target_radius": 0.20,
-        "shooting_approach_distance": 0.35,
+        "shooting_approach_distance": 0.05,
+        "shooting_contact_gap": 0.0,
+        "shooting_spin_direction": "ccw",
         "shooting_angle_offset": 0.0,
         "shooting_linear_speed": 0.3,
         "shooting_angular_speed": 1.5,
         "shooting_spin_rotations": 1,
-        "shooting_timeout_sec": 30.0,
-        "shooting_max_attempts": 3,
+        "shooting_timeout_sec": 150.0,
+        "shooting_max_attempts": 20,
         "use_manipulator": True,
-        "grab_arm_x": 0.0,
-        "grab_arm_z": 0.0,
+        "grab_arm_x": 0.3,
+        "grab_arm_z": 0.3,
         "grab_arm_relative": False,
-        "grab_arm_settle_sec": 0.3,
+        "grab_arm_settle_sec": 0.5,
+        "gripper_open_power": 0.5,
+        "gripper_open_settle_sec": 0.5,
         "gripper_close_power": 0.5,
         "gripper_close_settle_sec": 0.5,
-        "lift_arm_x": 1.0,
-        "lift_arm_z": 2.0,
+        "lift_arm_x": 0.0,
+        "lift_arm_z": 1.0,
         "lift_arm_relative": False,
-        "lift_arm_settle_sec": 0.3,
+        "lift_arm_settle_sec": 0.5,
         "backward_distance": 0.30,
         "backward_duration_sec": 2.0,
         "backward_publish_rate_hz": 20.0,
-        "ready_arm_x": 0.0,
+        "ready_arm_x": 0.1,
         "ready_arm_z": 0.0,
         "ready_arm_relative": False,
-        "ready_arm_settle_sec": 0.3,
+        "ready_arm_settle_sec": 0.5,
     }
 
     def __init__(self) -> None:
@@ -440,6 +444,8 @@ class MissionManager(Node):
         goal.offset_y = self.shooting_offset_y
         goal.target_radius = self.shooting_target_radius
         goal.approach_distance = self.shooting_approach_distance
+        goal.contact_gap = self.shooting_contact_gap
+        goal.spin_direction = self.shooting_spin_direction
         goal.shooting_angle_offset = self.shooting_angle_offset
         goal.linear_speed = self.shooting_linear_speed
         goal.angular_speed = self.shooting_angular_speed
@@ -510,6 +516,7 @@ class MissionManager(Node):
         if MoveArm is None or GripperControl is None:
             raise RuntimeError("MoveArm or GripperControl action is not available")
 
+        self._open_gripper()
         self._move_arm(
             self.grab_arm_x,
             self.grab_arm_z,
@@ -517,19 +524,7 @@ class MissionManager(Node):
             self.grab_arm_settle_sec,
         )
         self._close_gripper()
-        self._move_arm(
-            self.lift_arm_x,
-            self.lift_arm_z,
-            self.lift_arm_relative,
-            self.lift_arm_settle_sec,
-        )
         self._back_up()
-        self._move_arm(
-            self.ready_arm_x,
-            self.ready_arm_z,
-            self.ready_arm_relative,
-            self.ready_arm_settle_sec,
-        )
 
     def _move_arm(
         self,
@@ -544,6 +539,13 @@ class MissionManager(Node):
         goal.relative = bool(relative)
         self._send_goal(self.arm_client, goal, self._arm_feedback)
         Event().wait(settle_sec)
+
+    def _open_gripper(self) -> None:
+        goal = GripperControl.Goal()
+        goal.target_state = GripperControl.Goal.OPEN
+        goal.power = self.gripper_open_power
+        self._send_goal(self.gripper_client, goal, self._gripper_feedback)
+        Event().wait(self.gripper_open_settle_sec)
 
     def _close_gripper(self) -> None:
         goal = GripperControl.Goal()

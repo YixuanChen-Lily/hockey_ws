@@ -14,6 +14,7 @@ def generate_launch_description() -> LaunchDescription:
     goal_pose_topic = LaunchConfiguration("goal_pose_topic")
 
     safe_qp_solver = LaunchConfiguration("safe_qp_solver")
+    safe_lookahead_distance = LaunchConfiguration("safe_lookahead_distance")
     safe_dynamic_robot_ids = ParameterValue(
         LaunchConfiguration("safe_dynamic_robot_ids"),
         value_type=str,
@@ -48,9 +49,17 @@ def generate_launch_description() -> LaunchDescription:
 
     linear_speed = LaunchConfiguration("linear_speed")
     angular_speed = LaunchConfiguration("angular_speed")
+    pose_timeout_sec = LaunchConfiguration("pose_timeout_sec")
+    target_pose_timeout_sec = LaunchConfiguration("target_pose_timeout_sec")
+    dynamic_obstacle_timeout_sec = LaunchConfiguration(
+        "dynamic_obstacle_timeout_sec"
+    )
+    navigation_timeout_sec = LaunchConfiguration("navigation_timeout_sec")
     safe_navigation_timeout_sec = LaunchConfiguration(
         "safe_navigation_timeout_sec"
     )
+    spin_timeout_sec = LaunchConfiguration("spin_timeout_sec")
+    action_wait_timeout_sec = LaunchConfiguration("action_wait_timeout_sec")
     align_timeout_sec = LaunchConfiguration("align_timeout_sec")
     final_yaw_tolerance = LaunchConfiguration("final_yaw_tolerance")
 
@@ -60,18 +69,30 @@ def generate_launch_description() -> LaunchDescription:
     shooting_offset_y = LaunchConfiguration("shooting_offset_y")
     shooting_target_radius = LaunchConfiguration("shooting_target_radius")
     shooting_approach_distance = LaunchConfiguration("shooting_approach_distance")
+    shooting_contact_gap = LaunchConfiguration("shooting_contact_gap")
+    shooting_spin_direction = LaunchConfiguration("shooting_spin_direction")
+    shooting_puck_obstacle_enabled = LaunchConfiguration(
+        "shooting_puck_obstacle_enabled"
+    )
+    shooting_puck_obstacle_radius = LaunchConfiguration(
+        "shooting_puck_obstacle_radius"
+    )
     shooting_angle_offset = LaunchConfiguration("shooting_angle_offset")
     shooting_linear_speed = LaunchConfiguration("shooting_linear_speed")
     shooting_angular_speed = LaunchConfiguration("shooting_angular_speed")
     shooting_spin_rotations = LaunchConfiguration("shooting_spin_rotations")
     shooting_timeout_sec = LaunchConfiguration("shooting_timeout_sec")
+    shooting_pose_timeout_sec = LaunchConfiguration("shooting_pose_timeout_sec")
     shooting_max_attempts = LaunchConfiguration("shooting_max_attempts")
+    driver_wait_timeout_sec = LaunchConfiguration("driver_wait_timeout_sec")
 
     use_manipulator = LaunchConfiguration("use_manipulator")
     grab_arm_x = LaunchConfiguration("grab_arm_x")
     grab_arm_z = LaunchConfiguration("grab_arm_z")
     grab_arm_relative = LaunchConfiguration("grab_arm_relative")
     grab_arm_settle_sec = LaunchConfiguration("grab_arm_settle_sec")
+    gripper_open_power = LaunchConfiguration("gripper_open_power")
+    gripper_open_settle_sec = LaunchConfiguration("gripper_open_settle_sec")
     gripper_close_power = LaunchConfiguration("gripper_close_power")
     gripper_close_settle_sec = LaunchConfiguration("gripper_close_settle_sec")
     lift_arm_x = LaunchConfiguration("lift_arm_x")
@@ -85,6 +106,9 @@ def generate_launch_description() -> LaunchDescription:
     ready_arm_z = LaunchConfiguration("ready_arm_z")
     ready_arm_relative = LaunchConfiguration("ready_arm_relative")
     ready_arm_settle_sec = LaunchConfiguration("ready_arm_settle_sec")
+    plotter_enabled = LaunchConfiguration("plotter_enabled")
+    plotter_show_gui = LaunchConfiguration("plotter_show_gui")
+    plotter_output_path = LaunchConfiguration("plotter_output_path")
 
     return LaunchDescription(
         [
@@ -106,6 +130,7 @@ def generate_launch_description() -> LaunchDescription:
 
             # QP solver backend for the linearized CLF-CBF-QP controller.
             DeclareLaunchArgument("safe_qp_solver", default_value="cvxopt"),
+            DeclareLaunchArgument("safe_lookahead_distance", default_value="0.25"),
 
             # Dynamic robot obstacles. Leave ids empty to disable.
             DeclareLaunchArgument("safe_dynamic_robot_ids", default_value="[]"),
@@ -150,11 +175,32 @@ def generate_launch_description() -> LaunchDescription:
             # Mission-level speed and timeout knobs.
             DeclareLaunchArgument("linear_speed", default_value="0.4"),
             DeclareLaunchArgument("angular_speed", default_value="0.8"),
+            DeclareLaunchArgument("pose_timeout_sec", default_value="150.0"),
+            DeclareLaunchArgument(
+                "target_pose_timeout_sec",
+                default_value="150.0",
+            ),
+            DeclareLaunchArgument(
+                "dynamic_obstacle_timeout_sec",
+                default_value="150.0",
+            ),
+            DeclareLaunchArgument(
+                "navigation_timeout_sec",
+                default_value="150.0",
+            ),
             DeclareLaunchArgument(
                 "safe_navigation_timeout_sec",
-                default_value="30.0",
+                default_value="150.0",
             ),
-            DeclareLaunchArgument("align_timeout_sec", default_value="8.0"),
+            DeclareLaunchArgument(
+                "spin_timeout_sec",
+                default_value="150.0",
+            ),
+            DeclareLaunchArgument(
+                "action_wait_timeout_sec",
+                default_value="150.0",
+            ),
+            DeclareLaunchArgument("align_timeout_sec", default_value="150.0"),
             DeclareLaunchArgument("final_yaw_tolerance", default_value="0.08"),
 
             # Optional shooting phase after parking/pickup.
@@ -163,21 +209,40 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("shooting_offset_x", default_value="0.0"),
             DeclareLaunchArgument("shooting_offset_y", default_value="0.0"),
             DeclareLaunchArgument("shooting_target_radius", default_value="0.20"),
-            DeclareLaunchArgument("shooting_approach_distance", default_value="0.35"),
+            DeclareLaunchArgument("shooting_approach_distance", default_value="0.05"),
+            DeclareLaunchArgument("shooting_contact_gap", default_value="0.0"),
+            DeclareLaunchArgument("shooting_spin_direction", default_value="ccw"),
+            DeclareLaunchArgument(
+                "shooting_puck_obstacle_enabled",
+                default_value="true",
+            ),
+            DeclareLaunchArgument("shooting_puck_obstacle_radius", default_value="0.10"),
             DeclareLaunchArgument("shooting_angle_offset", default_value="0.0"),
             DeclareLaunchArgument("shooting_linear_speed", default_value="0.3"),
             DeclareLaunchArgument("shooting_angular_speed", default_value="1.5"),
             DeclareLaunchArgument("shooting_spin_rotations", default_value="1"),
-            DeclareLaunchArgument("shooting_timeout_sec", default_value="30.0"),
-            DeclareLaunchArgument("shooting_max_attempts", default_value="3"),
+            DeclareLaunchArgument("shooting_timeout_sec", default_value="150.0"),
+            DeclareLaunchArgument(
+                "shooting_pose_timeout_sec",
+                default_value="150.0",
+            ),
+            DeclareLaunchArgument("shooting_max_attempts", default_value="20"),
 
             # Stick pickup is part of this mission.
             DeclareLaunchArgument("use_manipulator", default_value="true"),
-            DeclareLaunchArgument("grab_arm_x", default_value="0.0"),
-            DeclareLaunchArgument("grab_arm_z", default_value="1.0"),
+            DeclareLaunchArgument("grab_arm_x", default_value="0.3"),
+            DeclareLaunchArgument("grab_arm_z", default_value="0.3"),
             DeclareLaunchArgument("grab_arm_relative", default_value="false"),
-            DeclareLaunchArgument("grab_arm_settle_sec", default_value="0.3"),
-            # Step 2: close the gripper (power must remain in [0, 1]).
+            DeclareLaunchArgument("grab_arm_settle_sec", default_value="0.5"),
+            # Step 2: open then close the gripper (power must remain in [0, 1]).
+            DeclareLaunchArgument(
+                "gripper_open_power",
+                default_value="0.5",
+            ),
+            DeclareLaunchArgument(
+                "gripper_open_settle_sec",
+                default_value="0.5",
+            ),
             DeclareLaunchArgument(
                 "gripper_close_power",
                 default_value="0.5",
@@ -187,10 +252,10 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="0.5",
             ),
             # Step 3: lift the arm while retaining the closed gripper.
-            DeclareLaunchArgument("lift_arm_x", default_value="1.0"),
-            DeclareLaunchArgument("lift_arm_z", default_value="2.0"),
+            DeclareLaunchArgument("lift_arm_x", default_value="0.0"),
+            DeclareLaunchArgument("lift_arm_z", default_value="1.0"),
             DeclareLaunchArgument("lift_arm_relative", default_value="false"),
-            DeclareLaunchArgument("lift_arm_settle_sec", default_value="0.3"),
+            DeclareLaunchArgument("lift_arm_settle_sec", default_value="0.5"),
             DeclareLaunchArgument("backward_distance", default_value="0.30"),
             DeclareLaunchArgument(
                 "backward_duration_sec",
@@ -201,10 +266,20 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="20.0",
             ),
             # Step 5: lower the arm into the ready-to-hit pose.
-            DeclareLaunchArgument("ready_arm_x", default_value="0.0"),
+            DeclareLaunchArgument("ready_arm_x", default_value="0.1"),
             DeclareLaunchArgument("ready_arm_z", default_value="0.0"),
             DeclareLaunchArgument("ready_arm_relative", default_value="false"),
-            DeclareLaunchArgument("ready_arm_settle_sec", default_value="0.3"),
+            DeclareLaunchArgument("ready_arm_settle_sec", default_value="0.5"),
+            DeclareLaunchArgument(
+                "driver_wait_timeout_sec",
+                default_value="150.0",
+            ),
+            DeclareLaunchArgument("plotter_enabled", default_value="false"),
+            DeclareLaunchArgument("plotter_show_gui", default_value="false"),
+            DeclareLaunchArgument(
+                "plotter_output_path",
+                default_value="/hockey_ws/src/hockey_controller/parking_plot.png",
+            ),
 
             Node(
                 package="hockey_controller",
@@ -215,6 +290,7 @@ def generate_launch_description() -> LaunchDescription:
                 parameters=[
                     {
                         "robot_id": robot_id,
+                        "pose_timeout_sec": pose_timeout_sec,
                     }
                 ],
             ),
@@ -229,6 +305,7 @@ def generate_launch_description() -> LaunchDescription:
                         "robot_id": robot_id,
                         "action_name": "safe_navigate_to_point",
                         "qp_solver": safe_qp_solver,
+                        "lookahead_distance": safe_lookahead_distance,
                         "dynamic_robot_ids": safe_dynamic_robot_ids,
                         "dynamic_obstacles_required": (
                             safe_dynamic_obstacles_required
@@ -241,6 +318,11 @@ def generate_launch_description() -> LaunchDescription:
                             safe_dynamic_robot_safety_margin
                         ),
                         "target_pose_topic": target_pose_topic,
+                        "pose_timeout_sec": pose_timeout_sec,
+                        "target_pose_timeout_sec": target_pose_timeout_sec,
+                        "dynamic_obstacle_timeout_sec": (
+                            dynamic_obstacle_timeout_sec
+                        ),
                     }
                 ],
             ),
@@ -253,6 +335,7 @@ def generate_launch_description() -> LaunchDescription:
                 parameters=[
                     {
                         "robot_id": robot_id,
+                        "pose_timeout_sec": pose_timeout_sec,
                     }
                 ],
             ),
@@ -270,6 +353,17 @@ def generate_launch_description() -> LaunchDescription:
                         "goal_pose_topic": goal_pose_topic,
                         "safe_navigation_action": "safe_navigate_to_point",
                         "spin_action": "spin",
+                        "pose_timeout_sec": pose_timeout_sec,
+                        "action_wait_timeout_sec": action_wait_timeout_sec,
+                        "align_timeout_sec": align_timeout_sec,
+                        "shooting_pose_timeout_sec": shooting_pose_timeout_sec,
+                        "safe_lookahead_distance": safe_lookahead_distance,
+                        "shooting_puck_obstacle_enabled": (
+                            shooting_puck_obstacle_enabled
+                        ),
+                        "shooting_puck_obstacle_radius": (
+                            shooting_puck_obstacle_radius
+                        ),
                     }
                 ],
             ),
@@ -283,6 +377,7 @@ def generate_launch_description() -> LaunchDescription:
                 parameters=[
                     {
                         "robot_id": robot_id,
+                        "driver_wait_timeout_sec": driver_wait_timeout_sec,
                     }
                 ],
             ),
@@ -296,6 +391,7 @@ def generate_launch_description() -> LaunchDescription:
                 parameters=[
                     {
                         "robot_id": robot_id,
+                        "driver_wait_timeout_sec": driver_wait_timeout_sec,
                     }
                 ],
             ),
@@ -330,9 +426,13 @@ def generate_launch_description() -> LaunchDescription:
                         "final_approach_point_gain": final_approach_point_gain,
                         "linear_speed": linear_speed,
                         "angular_speed": angular_speed,
+                        "pose_timeout_sec": pose_timeout_sec,
+                        "navigation_timeout_sec": navigation_timeout_sec,
                         "safe_navigation_timeout_sec": (
                             safe_navigation_timeout_sec
                         ),
+                        "spin_timeout_sec": spin_timeout_sec,
+                        "action_wait_timeout_sec": action_wait_timeout_sec,
                         "align_timeout_sec": align_timeout_sec,
                         "final_yaw_tolerance": final_yaw_tolerance,
                         "shooting_action": "shoot_puck",
@@ -344,6 +444,8 @@ def generate_launch_description() -> LaunchDescription:
                         "shooting_approach_distance": (
                             shooting_approach_distance
                         ),
+                        "shooting_contact_gap": shooting_contact_gap,
+                        "shooting_spin_direction": shooting_spin_direction,
                         "shooting_angle_offset": shooting_angle_offset,
                         "shooting_linear_speed": shooting_linear_speed,
                         "shooting_angular_speed": shooting_angular_speed,
@@ -355,6 +457,8 @@ def generate_launch_description() -> LaunchDescription:
                         "grab_arm_z": grab_arm_z,
                         "grab_arm_relative": grab_arm_relative,
                         "grab_arm_settle_sec": grab_arm_settle_sec,
+                        "gripper_open_power": gripper_open_power,
+                        "gripper_open_settle_sec": gripper_open_settle_sec,
                         "gripper_close_power": gripper_close_power,
                         "gripper_close_settle_sec": gripper_close_settle_sec,
                         "lift_arm_x": lift_arm_x,
@@ -368,6 +472,41 @@ def generate_launch_description() -> LaunchDescription:
                         "ready_arm_z": ready_arm_z,
                         "ready_arm_relative": ready_arm_relative,
                         "ready_arm_settle_sec": ready_arm_settle_sec,
+                    }
+                ],
+            ),
+            Node(
+                package="hockey_controller",
+                executable="parking_plotter",
+                name="parking_plotter",
+                namespace=namespace,
+                output="screen",
+                condition=IfCondition(plotter_enabled),
+                parameters=[
+                    {
+                        "robot_id": robot_id,
+                        "show_gui": plotter_show_gui,
+                        "output_path": plotter_output_path,
+                        "puck_pose_topic": puck_pose_topic,
+                        "goal_pose_topic": goal_pose_topic,
+                        "pose_timeout_sec": pose_timeout_sec,
+                        "dynamic_obstacle_timeout_sec": (
+                            dynamic_obstacle_timeout_sec
+                        ),
+                        "shooting_role": shooting_role,
+                        "shooting_offset_x": shooting_offset_x,
+                        "shooting_offset_y": shooting_offset_y,
+                        "shooting_target_radius": shooting_target_radius,
+                        "shooting_contact_gap": shooting_contact_gap,
+                        "shooting_spin_direction": shooting_spin_direction,
+                        "shooting_puck_obstacle_enabled": (
+                            shooting_puck_obstacle_enabled
+                        ),
+                        "shooting_puck_obstacle_radius": (
+                            shooting_puck_obstacle_radius
+                        ),
+                        "safe_lookahead_distance": safe_lookahead_distance,
+                        "dynamic_robot_ids": safe_dynamic_robot_ids,
                     }
                 ],
             ),

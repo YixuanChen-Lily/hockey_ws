@@ -24,6 +24,14 @@ class DynamicRobotPlotState:
     timestamp_sec: float
 
 
+@dataclass
+class PosePlotState:
+    x: float
+    y: float
+    yaw: float
+    timestamp_sec: float
+
+
 class ParkingPlotter(Node):
     """Standalone matplotlib view for parking radii, route, and trajectory."""
 
@@ -37,7 +45,23 @@ class ParkingPlotter(Node):
         self.declare_parameter("trajectory_length", 400)
         self.declare_parameter("axis_margin", 0.35)
         self.declare_parameter("show_gui", False)
-        self.declare_parameter("output_path", "/tmp/parking_plot.png")
+        self.declare_parameter(
+            "output_path",
+            "/hockey_ws/src/hockey_controller/parking_plot.png",
+        )
+        self.declare_parameter("show_shooting_geometry", True)
+        self.declare_parameter("puck_pose_topic", "/vrpn_mocap/puck/pose")
+        self.declare_parameter("goal_pose_topic", "/vrpn_mocap/goal/pose")
+        self.declare_parameter("shooting_role", "shooter")
+        self.declare_parameter("shooting_offset_x", 0.0)
+        self.declare_parameter("shooting_offset_y", 0.0)
+        self.declare_parameter("shooting_target_radius", 0.20)
+        self.declare_parameter("shooting_contact_gap", 0.0)
+        self.declare_parameter("shooting_spin_direction", "ccw")
+        self.declare_parameter("shooting_puck_obstacle_enabled", True)
+        self.declare_parameter("shooting_puck_obstacle_radius", 0.10)
+        self.declare_parameter("safe_lookahead_distance", 0.25)
+        self.declare_parameter("pose_timeout_sec", 150.0)
         dynamic_ids_descriptor = ParameterDescriptor(dynamic_typing=True)
         self.declare_parameter("dynamic_robot_ids", [], dynamic_ids_descriptor)
         self.declare_parameter(
@@ -47,7 +71,7 @@ class ParkingPlotter(Node):
         self.declare_parameter("dynamic_controlled_robot_radius", 0.18)
         self.declare_parameter("dynamic_robot_radius", 0.18)
         self.declare_parameter("dynamic_robot_safety_margin", 0.10)
-        self.declare_parameter("dynamic_obstacle_timeout_sec", 0.5)
+        self.declare_parameter("dynamic_obstacle_timeout_sec", 150.0)
 
         robot_id = int(self.get_parameter("robot_id").value)
         pose_topic = str(self.get_parameter("pose_topic").value)
@@ -60,6 +84,37 @@ class ParkingPlotter(Node):
         self.axis_margin = float(self.get_parameter("axis_margin").value)
         self.show_gui = bool(self.get_parameter("show_gui").value)
         self.output_path = str(self.get_parameter("output_path").value)
+        self.show_shooting_geometry = bool(
+            self.get_parameter("show_shooting_geometry").value
+        )
+        self.puck_pose_topic = str(self.get_parameter("puck_pose_topic").value)
+        self.goal_pose_topic = str(self.get_parameter("goal_pose_topic").value)
+        self.shooting_role = str(self.get_parameter("shooting_role").value)
+        self.shooting_offset_x = float(
+            self.get_parameter("shooting_offset_x").value
+        )
+        self.shooting_offset_y = float(
+            self.get_parameter("shooting_offset_y").value
+        )
+        self.shooting_target_radius = float(
+            self.get_parameter("shooting_target_radius").value
+        )
+        self.shooting_contact_gap = float(
+            self.get_parameter("shooting_contact_gap").value
+        )
+        self.shooting_spin_direction = str(
+            self.get_parameter("shooting_spin_direction").value
+        )
+        self.shooting_puck_obstacle_enabled = bool(
+            self.get_parameter("shooting_puck_obstacle_enabled").value
+        )
+        self.shooting_puck_obstacle_radius = float(
+            self.get_parameter("shooting_puck_obstacle_radius").value
+        )
+        self.safe_lookahead_distance = float(
+            self.get_parameter("safe_lookahead_distance").value
+        )
+        self.pose_timeout_sec = float(self.get_parameter("pose_timeout_sec").value)
         self.dynamic_robot_ids = self._coerce_int_array(
             self.get_parameter("dynamic_robot_ids").value
         )
@@ -81,6 +136,8 @@ class ParkingPlotter(Node):
         trajectory_length = int(self.get_parameter("trajectory_length").value)
         self._trajectory = deque(maxlen=max(1, trajectory_length))
         self._markers: List[Marker] = []
+        self._puck_pose: Optional[PosePlotState] = None
+        self._goal_pose: Optional[PosePlotState] = None
         self._dynamic_robot_states: Dict[int, DynamicRobotPlotState] = {}
         self._dynamic_robot_subscriptions = []
         self._dirty = True
@@ -99,6 +156,20 @@ class ParkingPlotter(Node):
             self.marker_topic,
             self._marker_callback,
             10,
+            callback_group=self._callback_group,
+        )
+        self._puck_subscription = self.create_subscription(
+            PoseStamped,
+            self.puck_pose_topic,
+            self._puck_pose_callback,
+            qos_profile_sensor_data,
+            callback_group=self._callback_group,
+        )
+        self._goal_subscription = self.create_subscription(
+            PoseStamped,
+            self.goal_pose_topic,
+            self._goal_pose_callback,
+            qos_profile_sensor_data,
             callback_group=self._callback_group,
         )
         for dynamic_robot_id in self.dynamic_robot_ids:
@@ -128,6 +199,8 @@ class ParkingPlotter(Node):
             "Parking plotter ready:\n"
             f"  pose   = {self.pose_topic}\n"
             f"  marker = {self.marker_topic}\n"
+            f"  puck   = {self.puck_pose_topic}\n"
+            f"  goal   = {self.goal_pose_topic}\n"
             f"  dynamic robots = {self.dynamic_robot_ids}\n"
             f"  dynamic radius = {self.dynamic_obstacle_radius:.2f}\n"
             f"  gui    = {self.show_gui}\n"
@@ -216,6 +289,24 @@ class ParkingPlotter(Node):
             )
             self._dirty = True
 
+    def _puck_pose_callback(self, message: PoseStamped) -> None:
+        with self._lock:
+            self._puck_pose = self._pose_state_from_message(message)
+            self._dirty = True
+
+    def _goal_pose_callback(self, message: PoseStamped) -> None:
+        with self._lock:
+            self._goal_pose = self._pose_state_from_message(message)
+            self._dirty = True
+
+    def _pose_state_from_message(self, message: PoseStamped) -> PosePlotState:
+        return PosePlotState(
+            x=float(message.pose.position.x),
+            y=float(message.pose.position.y),
+            yaw=self._yaw_from_quaternion(message.pose.orientation),
+            timestamp_sec=time.monotonic(),
+        )
+
     def _draw(self) -> None:
         with self._lock:
             if not self._dirty:
@@ -223,6 +314,8 @@ class ParkingPlotter(Node):
             markers = list(self._markers)
             trajectory = list(self._trajectory)
             dynamic_robot_states = dict(self._dynamic_robot_states)
+            puck_pose = self._puck_pose
+            goal_pose = self._goal_pose
             self._dirty = False
 
         self._axis.clear()
@@ -238,6 +331,7 @@ class ParkingPlotter(Node):
         for marker in markers:
             plotted_points.extend(self._draw_marker(marker))
         plotted_points.extend(self._draw_dynamic_obstacles(dynamic_robot_states))
+        plotted_points.extend(self._draw_shooting_geometry(puck_pose, goal_pose))
 
         if trajectory:
             xs = [point[0] for point in trajectory]
@@ -343,6 +437,131 @@ class ParkingPlotter(Node):
             )
         return plotted_points
 
+    def _draw_shooting_geometry(
+        self,
+        puck_pose: Optional[PosePlotState],
+        goal_pose: Optional[PosePlotState],
+    ) -> List[Tuple[float, float]]:
+        if not self.show_shooting_geometry:
+            return []
+        if puck_pose is None or goal_pose is None:
+            return []
+        now_sec = time.monotonic()
+        if (
+            now_sec - puck_pose.timestamp_sec > self.pose_timeout_sec
+            or now_sec - goal_pose.timestamp_sec > self.pose_timeout_sec
+        ):
+            return []
+
+        target_x = goal_pose.x
+        target_y = goal_pose.y
+        if self.shooting_role == "passer":
+            target_x += self.shooting_offset_x
+            target_y += self.shooting_offset_y
+
+        dx = target_x - puck_pose.x
+        dy = target_y - puck_pose.y
+        distance = math.hypot(dx, dy)
+        if distance < 1e-6:
+            return [(puck_pose.x, puck_pose.y), (target_x, target_y)]
+
+        ux = dx / distance
+        uy = dy / distance
+        if self.shooting_spin_direction == "ccw":
+            normal_x = uy
+            normal_y = -ux
+        else:
+            normal_x = -uy
+            normal_y = ux
+        side_distance = self.safe_lookahead_distance + self.shooting_contact_gap
+        robot_x = puck_pose.x - side_distance * normal_x
+        robot_y = puck_pose.y - side_distance * normal_y
+        heading_x = -ux
+        heading_y = -uy
+        tip_x = robot_x + self.safe_lookahead_distance * heading_x
+        tip_y = robot_y + self.safe_lookahead_distance * heading_y
+
+        self._axis.plot(
+            [puck_pose.x, target_x],
+            [puck_pose.y, target_y],
+            color="tab:green",
+            linewidth=2.0,
+            label="shoot line: puck-target",
+        )
+        self._axis.plot(
+            [robot_x, puck_pose.x],
+            [robot_y, puck_pose.y],
+            color="tab:purple",
+            linewidth=1.8,
+            linestyle=":",
+            label="perpendicular: center-puck",
+        )
+        self._axis.plot(
+            [robot_x, tip_x],
+            [robot_y, tip_y],
+            color="tab:olive",
+            linewidth=2.0,
+            linestyle="--",
+            label="lookahead: center-to-stick-tip",
+        )
+        target_circle = self._patches.Circle(
+            (target_x, target_y),
+            self.shooting_target_radius,
+            facecolor=(0.0, 0.6, 0.0, 0.10),
+            edgecolor="tab:green",
+            linewidth=1.4,
+            linestyle="--",
+            label=f"shoot target r={self.shooting_target_radius:.2f}",
+        )
+        self._axis.add_patch(target_circle)
+        self._axis.scatter(
+            [robot_x, tip_x, puck_pose.x, target_x],
+            [robot_y, tip_y, puck_pose.y, target_y],
+            color=["black", "tab:orange", "tab:blue", "tab:green"],
+            s=[45, 55, 55, 55],
+            label="shooting geometry points",
+        )
+        self._axis.text(robot_x, robot_y, "R*", color="black", fontsize=9)
+        self._axis.text(tip_x, tip_y, "T", color="tab:orange", fontsize=9)
+        self._axis.text(puck_pose.x, puck_pose.y, "P", color="tab:blue", fontsize=9)
+        self._axis.text(target_x, target_y, "G*", color="tab:green", fontsize=9)
+        if self.shooting_puck_obstacle_enabled:
+            puck_obstacle = self._patches.Circle(
+                (puck_pose.x, puck_pose.y),
+                self.shooting_puck_obstacle_radius,
+                facecolor=(0.1, 0.3, 1.0, 0.08),
+                edgecolor="tab:blue",
+                linewidth=1.4,
+                linestyle="--",
+                label=f"puck obstacle r={self.shooting_puck_obstacle_radius:.2f}",
+            )
+            self._axis.add_patch(puck_obstacle)
+        self._axis.arrow(
+            robot_x,
+            robot_y,
+            0.20 * heading_x,
+            0.20 * heading_y,
+            color="tab:olive",
+            head_width=0.04,
+            length_includes_head=True,
+            label="robot heading",
+        )
+
+        return [
+            (robot_x, robot_y),
+            (tip_x, tip_y),
+            (
+                puck_pose.x - self.shooting_puck_obstacle_radius,
+                puck_pose.y - self.shooting_puck_obstacle_radius,
+            ),
+            (
+                puck_pose.x + self.shooting_puck_obstacle_radius,
+                puck_pose.y + self.shooting_puck_obstacle_radius,
+            ),
+            (target_x - self.shooting_target_radius, target_y - self.shooting_target_radius),
+            (target_x + self.shooting_target_radius, target_y + self.shooting_target_radius),
+        ]
+
     def _draw_circle(self, marker: Marker) -> List[Tuple[float, float]]:
         x = marker.pose.position.x
         y = marker.pose.position.y
@@ -405,6 +624,15 @@ class ParkingPlotter(Node):
         z = marker.pose.orientation.z
         w = marker.pose.orientation.w
         return 2.0 * math.atan2(z, w)
+
+    def _yaw_from_quaternion(self, quaternion) -> float:
+        siny_cosp = 2.0 * (
+            quaternion.w * quaternion.z + quaternion.x * quaternion.y
+        )
+        cosy_cosp = 1.0 - 2.0 * (
+            quaternion.y * quaternion.y + quaternion.z * quaternion.z
+        )
+        return math.atan2(siny_cosp, cosy_cosp)
 
     def _set_axis_limits(self, points: List[Tuple[float, float]]) -> None:
         if not points:
