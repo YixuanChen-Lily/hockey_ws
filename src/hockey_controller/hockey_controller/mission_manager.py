@@ -17,6 +17,10 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+from rclpy.qos import QoSProfile
+from rclpy.qos import ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy
+
 
 from hockey_interfaces.action import NavigateToPoint
 from hockey_interfaces.action import ShootPuck
@@ -86,7 +90,7 @@ class MissionManager(Node):
         "spin_timeout_sec": 15.0,
         "action_wait_timeout_sec": 5.0,
         "shooting_enabled": False,
-        "shooting_role": "shooter",
+        "shooting_role": "single", #shooter or passer or single
         "shooting_offset_x": 0.0,
         "shooting_offset_y": 0.0,
         "shooting_target_radius": 0.20,
@@ -219,13 +223,41 @@ class MissionManager(Node):
             callback_group=self._group,
         )
 
+
+        self.team_publisher = self.create_publisher(
+            String,
+            f'/team_rocket/robot_{self.robot_id}/passer/status',
+            QoSProfile(
+                depth=10,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.VOLATILE
+            )
+        )
+
+        self.team_subscription = self.create_subscription(
+            String,
+            f'/team_rocket/robot_{self.robot_id}/passer/status',
+            self.team_status_callback,
+            QoSProfile(
+                depth=10,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.VOLATILE
+            )
+        )
+
         self._status("IDLE")
         self.get_logger().info(
             "Mission manager ready. Call /mission/start.\n"
             f"  pose={self.pose_topic}\n"
             f"  cushion={self.cushion_pose_topic}\n"
-            f"  parking={self.parking_enabled}"
+            f"  robot_id={self.robot_id}\n"
+            f"  parking={self.parking_enabled}\n"
+            f"  shooting={self.shooting_enabled} ({self.shooting_role})"
         )
+
+    def team_status_callback(self, msg):
+        self.get_logger().info(f"Received team status: {msg.data}")
+        self.get_logger().info(f"STOPPED")
 
     def _load_parameters(self) -> None:
         for name, default in self.DEFAULTS.items():
@@ -366,7 +398,15 @@ class MissionManager(Node):
         else:
             self.get_logger().info("Skipping stick pickup because use_manipulator=false")
         if self.shooting_enabled:
-            self._shoot_puck()
+            if self.shooting_role == "passer":
+                self.get_logger().info("Shooting to pass location because role=passer")
+
+            if self.shooting_role == "shooter":
+                self.get_logger().info("Waiting to shoot because role=shooter")
+
+            if self.shooting_role == "single":
+                self.get_logger().info("Shooting puck because role=single")
+                self._shoot_puck()
         self._status("MISSION_DONE")
 
     def _run_simple_mission(self) -> None:
@@ -548,6 +588,13 @@ class MissionManager(Node):
     def _close_gripper(self) -> None:
         goal = GripperControl.Goal()
         goal.target_state = GripperControl.Goal.CLOSE
+        goal.power = self.gripper_close_power
+        self._send_goal(self.gripper_client, goal, self._gripper_feedback)
+        Event().wait(self.gripper_close_settle_sec)
+
+    def _open_gripper(self) -> None:
+        goal = GripperControl.Goal()
+        goal.target_state = GripperControl.Goal.OPEN
         goal.power = self.gripper_close_power
         self._send_goal(self.gripper_client, goal, self._gripper_feedback)
         Event().wait(self.gripper_close_settle_sec)

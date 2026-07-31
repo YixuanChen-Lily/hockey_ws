@@ -152,7 +152,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("angular_speed", default_value="0.8"),
             DeclareLaunchArgument(
                 "safe_navigation_timeout_sec",
-                default_value="30.0",
+                default_value="60.0",
             ),
             DeclareLaunchArgument("align_timeout_sec", default_value="8.0"),
             DeclareLaunchArgument("final_yaw_tolerance", default_value="0.08"),
