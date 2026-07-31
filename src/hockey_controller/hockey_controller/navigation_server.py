@@ -54,7 +54,7 @@ class NavigationServer(Node):
         self.declare_parameter("control_rate_hz", 20.0)
         self.declare_parameter("position_tolerance", 0.08)
         self.declare_parameter("heading_tolerance", 0.08)
-        self.declare_parameter("pose_timeout_sec", 1.0)
+        self.declare_parameter("pose_timeout_sec", 150.0)
         self.declare_parameter("align_gain", 2.0)
         self.declare_parameter("drive_heading_gain", 2.0)
         self.declare_parameter("distance_gain", 0.8)

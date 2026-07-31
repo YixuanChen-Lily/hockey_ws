@@ -48,7 +48,7 @@ class SpinServer(Node):
         self.declare_parameter("cmd_vel_topic", "")
         self.declare_parameter("action_name", "spin")
         self.declare_parameter("control_rate_hz", 20.0)
-        self.declare_parameter("pose_timeout_sec", 1.0)
+        self.declare_parameter("pose_timeout_sec", 150.0)
 
         self.robot_id = int(self.get_parameter("robot_id").value)
         pose_topic = str(self.get_parameter("pose_topic").value)
@@ -112,8 +112,8 @@ class SpinServer(Node):
         if request.rotations <= 0:
             self.get_logger().warning("Rejected goal: rotations must be positive.")
             return GoalResponse.REJECT
-        if request.angular_speed <= 0.0 or not math.isfinite(request.angular_speed):
-            self.get_logger().warning("Rejected goal: angular_speed must be positive.")
+        if request.angular_speed == 0.0 or not math.isfinite(request.angular_speed):
+            self.get_logger().warning("Rejected goal: angular_speed must be non-zero.")
             return GoalResponse.REJECT
         if request.timeout_sec <= 0.0 or not math.isfinite(request.timeout_sec):
             self.get_logger().warning("Rejected goal: timeout must be positive.")
@@ -138,6 +138,7 @@ class SpinServer(Node):
         feedback = Spin.Feedback()
         state = SpinState.WAIT_FOR_POSE
         target_rotation = 2.0 * math.pi * float(request.rotations)
+        spin_direction = 1.0 if request.angular_speed >= 0.0 else -1.0
         accumulated_rotation = 0.0
         previous_yaw = None
         start_time = time.monotonic()
@@ -185,7 +186,7 @@ class SpinServer(Node):
                         previous_yaw = yaw
 
                     yaw_change = wrap_to_pi(yaw - previous_yaw)
-                    accumulated_rotation += max(0.0, yaw_change)
+                    accumulated_rotation += max(0.0, spin_direction * yaw_change)
                     previous_yaw = yaw
 
                     if accumulated_rotation >= target_rotation:

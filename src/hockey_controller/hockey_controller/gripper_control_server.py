@@ -29,7 +29,7 @@ class GripperControlServer(Node):
         self.declare_parameter("robot_id", 1)
         self.declare_parameter("action_name", "control_gripper")
         self.declare_parameter("driver_action_name", "gripper")
-        self.declare_parameter("driver_wait_timeout_sec", 5.0)
+        self.declare_parameter("driver_wait_timeout_sec", 150.0)
 
         self.robot_id = int(self.get_parameter("robot_id").value)
         self.action_name = str(self.get_parameter("action_name").value)
