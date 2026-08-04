@@ -90,7 +90,10 @@ class MissionManager(Node):
         "spin_timeout_sec": 150.0,
         "action_wait_timeout_sec": 150.0,
         "shooting_enabled": False,
-        "shooting_role": "single", #shooter or passer or single
+        "shooting_role": "single",  # shooter, passer, or single
+        "team_name": "team_rocket",
+        "teammate_robot_id": 0,
+        "team_wait_timeout_sec": 150.0,
         "shooting_offset_x": 0.0,
         "shooting_offset_y": 0.0,
         "shooting_target_radius": 0.20,
@@ -99,8 +102,9 @@ class MissionManager(Node):
         "shooting_spin_direction": "ccw",
         "shooting_angle_offset": 0.0,
         "shooting_linear_speed": 0.3,
-        "shooting_angular_speed": 1.5,
+        "shooting_angular_speed": 3.0,
         "shooting_spin_rotations": 1,
+        "shooting_spin_angle_deg": 30.0,
         "shooting_timeout_sec": 150.0,
         "shooting_max_attempts": 20,
         "use_manipulator": True,
@@ -138,6 +142,8 @@ class MissionManager(Node):
         self._running = False
         self._stop_requested = False
         self._active_goal = None
+        self._team_pass_done = Event()
+        self._latest_team_status = ""
 
         self._load_parameters()
         self.pose_topic = self.pose_topic or f"/vrpn_mocap/dji_robot_{self.robot_id}/pose"
@@ -228,25 +234,29 @@ class MissionManager(Node):
         )
 
 
-        self.team_publisher = self.create_publisher(
-            String,
-            f'/team_rocket/robot_{self.robot_id}/passer/status',
-            QoSProfile(
-                depth=10,
-                reliability=ReliabilityPolicy.RELIABLE,
-                durability=DurabilityPolicy.VOLATILE
-            )
+        self.team_status_topic = (
+            f"/{self.team_name}/robot_{self.robot_id}/passer/status"
+        )
+        teammate_id = self.teammate_robot_id or self.robot_id
+        self.team_listen_topic = (
+            f"/{self.team_name}/robot_{teammate_id}/passer/status"
         )
 
+        team_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.team_publisher = self.create_publisher(
+            String,
+            self.team_status_topic,
+            team_qos,
+        )
         self.team_subscription = self.create_subscription(
             String,
-            f'/team_rocket/robot_{self.robot_id}/passer/status',
+            self.team_listen_topic,
             self.team_status_callback,
-            QoSProfile(
-                depth=10,
-                reliability=ReliabilityPolicy.RELIABLE,
-                durability=DurabilityPolicy.VOLATILE
-            )
+            team_qos,
         )
 
         self._status("IDLE")
@@ -256,12 +266,17 @@ class MissionManager(Node):
             f"  cushion={self.cushion_pose_topic}\n"
             f"  robot_id={self.robot_id}\n"
             f"  parking={self.parking_enabled}\n"
-            f"  shooting={self.shooting_enabled} ({self.shooting_role})"
+            f"  shooting={self.shooting_enabled} ({self.shooting_role})\n"
+            f"  team pub={self.team_status_topic}\n"
+            f"  team listen={self.team_listen_topic}"
         )
 
     def team_status_callback(self, msg):
-        self.get_logger().info(f"Received team status: {msg.data}")
-        self.get_logger().info(f"STOPPED")
+        status = str(msg.data)
+        self._latest_team_status = status
+        self.get_logger().info(f"Received team status: {status}")
+        if status in ("PASS_DONE", "PASSER_DONE", "PUCK_PASSED"):
+            self._team_pass_done.set()
 
     def _load_parameters(self) -> None:
         for name, default in self.DEFAULTS.items():
@@ -404,13 +419,22 @@ class MissionManager(Node):
         if self.shooting_enabled:
             if self.shooting_role == "passer":
                 self.get_logger().info("Shooting to pass location because role=passer")
+                self._shoot_puck()
+                self._publish_team_status("PASS_DONE")
 
-            if self.shooting_role == "shooter":
+            elif self.shooting_role == "shooter":
                 self.get_logger().info("Waiting to shoot because role=shooter")
+                self._wait_for_team_pass()
+                self._shoot_puck()
 
-            if self.shooting_role == "single":
+            elif self.shooting_role == "single":
                 self.get_logger().info("Shooting puck because role=single")
                 self._shoot_puck()
+            else:
+                raise RuntimeError(
+                    f"unsupported shooting_role {self.shooting_role!r}; "
+                    "use single, passer, or shooter"
+                )
         self._status("MISSION_DONE")
 
     def _run_simple_mission(self) -> None:
@@ -472,6 +496,7 @@ class MissionManager(Node):
     def _spin(self) -> None:
         goal = Spin.Goal()
         goal.rotations = self.rotations
+        goal.spin_angle_deg = 0.0
         goal.angular_speed = self.angular_speed
         goal.timeout_sec = self.spin_timeout_sec
         self._send_goal(self.spin_client, goal, self._spin_feedback)
@@ -490,9 +515,30 @@ class MissionManager(Node):
         goal.linear_speed = self.shooting_linear_speed
         goal.angular_speed = self.shooting_angular_speed
         goal.spin_rotations = self.shooting_spin_rotations
+        goal.spin_angle_deg = self.shooting_spin_angle_deg
         goal.timeout_sec = self.shooting_timeout_sec
         goal.max_attempts = self.shooting_max_attempts
         self._send_goal(self.shooting_client, goal, self._shooting_feedback)
+
+    def _publish_team_status(self, status: str) -> None:
+        self.team_publisher.publish(String(data=status))
+        self.get_logger().info(f"Published team status: {status}")
+
+    def _wait_for_team_pass(self) -> None:
+        self._status("WAIT_FOR_PASS")
+        if self._team_pass_done.is_set():
+            return
+
+        self.get_logger().info(
+            "Waiting for passer status "
+            f"on {self.team_listen_topic} for up to "
+            f"{self.team_wait_timeout_sec:.1f} seconds"
+        )
+        if not self._team_pass_done.wait(timeout=self.team_wait_timeout_sec):
+            raise RuntimeError(
+                "timed out waiting for PASS_DONE from passer; "
+                f"last team status={self._latest_team_status!r}"
+            )
 
     def _send_goal(self, client, goal, feedback_callback) -> None:
         if not client.wait_for_server(timeout_sec=self.action_wait_timeout_sec):

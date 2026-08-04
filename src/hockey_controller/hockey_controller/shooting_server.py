@@ -56,9 +56,12 @@ class ShootingServer(Node):
         self.declare_parameter("shooting_pose_position_tolerance", 0.04)
         self.declare_parameter("shooting_pose_timeout_sec", 150.0)
         self.declare_parameter("safe_lookahead_distance", 0.25)
+        self.declare_parameter("shooting_center_to_puck_distance", -1.0)
+        self.declare_parameter("avoid_puck_during_align", True)
+        self.declare_parameter("align_puck_angle_margin_deg", 12.0)
         self.declare_parameter("shooting_puck_obstacle_enabled", True)
         self.declare_parameter("shooting_puck_obstacle_radius", 0.10)
-        self.declare_parameter("post_hit_wait_sec", 1.0)
+        self.declare_parameter("post_hit_wait_sec", 3.0)
         self.declare_parameter("control_rate_hz", 20.0)
 
         self.robot_id = int(self.get_parameter("robot_id").value)
@@ -94,6 +97,15 @@ class ShootingServer(Node):
         )
         self.safe_lookahead_distance = float(
             self.get_parameter("safe_lookahead_distance").value
+        )
+        self.shooting_center_to_puck_distance = float(
+            self.get_parameter("shooting_center_to_puck_distance").value
+        )
+        self.avoid_puck_during_align = bool(
+            self.get_parameter("avoid_puck_during_align").value
+        )
+        self.align_puck_angle_margin = math.radians(
+            float(self.get_parameter("align_puck_angle_margin_deg").value)
         )
         self.shooting_puck_obstacle_enabled = bool(
             self.get_parameter("shooting_puck_obstacle_enabled").value
@@ -181,7 +193,7 @@ class ShootingServer(Node):
         )
 
     def _goal_callback(self, request: ShootPuck.Goal) -> GoalResponse:
-        if request.role not in ("shooter", "passer"):
+        if request.role not in ("shooter", "passer", "single"):
             self.get_logger().warning("Rejected shooting goal: invalid role.")
             return GoalResponse.REJECT
         if request.target_radius <= 0.0:
@@ -200,6 +212,17 @@ class ShootingServer(Node):
         if request.spin_direction not in ("ccw", "cw"):
             self.get_logger().warning(
                 "Rejected shooting goal: spin_direction must be ccw or cw."
+            )
+            return GoalResponse.REJECT
+        if request.spin_angle_deg < 0.0 or not math.isfinite(request.spin_angle_deg):
+            self.get_logger().warning(
+                "Rejected shooting goal: spin_angle_deg must be non-negative."
+            )
+            return GoalResponse.REJECT
+        if request.spin_angle_deg <= 0.0 and request.spin_rotations <= 0:
+            self.get_logger().warning(
+                "Rejected shooting goal: spin_rotations must be positive "
+                "when spin_angle_deg is 0."
             )
             return GoalResponse.REJECT
         if request.timeout_sec <= 0.0 or request.max_attempts <= 0:
@@ -325,6 +348,7 @@ class ShootingServer(Node):
                 self._align_to_yaw(
                     align_yaw,
                     request.angular_speed,
+                    avoid_puck=True,
                 )
                 self._drive_to_shoot_pose(
                     robot_point,
@@ -348,6 +372,7 @@ class ShootingServer(Node):
                 )
                 self._spin(
                     int(request.spin_rotations),
+                    float(request.spin_angle_deg),
                     spin_speed,
                     request.timeout_sec,
                 )
@@ -413,9 +438,16 @@ class ShootingServer(Node):
         goal.timeout_sec = float(timeout_sec)
         self._send_goal(self._safe_nav_client, goal)
 
-    def _spin(self, rotations: int, angular_speed: float, timeout_sec: float) -> None:
+    def _spin(
+        self,
+        rotations: int,
+        spin_angle_deg: float,
+        angular_speed: float,
+        timeout_sec: float,
+    ) -> None:
         goal = Spin.Goal()
         goal.rotations = int(rotations)
+        goal.spin_angle_deg = float(spin_angle_deg)
         goal.angular_speed = float(angular_speed)
         goal.timeout_sec = float(timeout_sec)
         self._send_goal(self._spin_client, goal)
@@ -547,21 +579,36 @@ class ShootingServer(Node):
             time.sleep(0.05)
         return puck_distance <= request.target_radius, puck_distance
 
-    def _align_to_yaw(self, target_yaw: float, max_angular_speed: float) -> None:
+    def _align_to_yaw(
+        self,
+        target_yaw: float,
+        max_angular_speed: float,
+        avoid_puck: bool = False,
+    ) -> None:
         start_time = time.monotonic()
         control_period = 1.0 / max(self.control_rate_hz, 1.0)
+        forced_direction = (
+            self._align_direction_away_from_puck(target_yaw)
+            if avoid_puck and self.avoid_puck_during_align
+            else 0.0
+        )
         while rclpy.ok():
             robot_pose = self._fresh_robot_pose()
             if robot_pose is None:
                 raise RuntimeError("stale robot pose during shooting align")
-            error = wrap_to_pi(target_yaw - robot_pose[2])
+            shortest_error = wrap_to_pi(target_yaw - robot_pose[2])
+            error = (
+                self._directed_yaw_error(target_yaw, robot_pose[2], forced_direction)
+                if forced_direction
+                else shortest_error
+            )
             if abs(error) <= self.heading_tolerance:
                 self._stop_robot()
                 return
             if time.monotonic() - start_time > self.align_timeout_sec:
                 raise RuntimeError(
                     f"shooting align timeout: target={target_yaw:.3f}, "
-                    f"current={robot_pose[2]:.3f}, error={error:.3f}"
+                    f"current={robot_pose[2]:.3f}, error={shortest_error:.3f}"
                 )
             twist = Twist()
             twist.angular.z = clamp(
@@ -571,6 +618,79 @@ class ShootingServer(Node):
             )
             self._cmd_vel_publisher.publish(twist)
             time.sleep(control_period)
+
+    def _align_direction_away_from_puck(self, target_yaw: float) -> float:
+        robot_pose = self._fresh_robot_pose()
+        puck_pose = self._fresh_puck_pose()
+        if robot_pose is None or puck_pose is None:
+            return 0.0
+
+        rx, ry, current_yaw = robot_pose
+        puck_dx = puck_pose[0] - rx
+        puck_dy = puck_pose[1] - ry
+        puck_distance = math.hypot(puck_dx, puck_dy)
+        if puck_distance < 1e-6:
+            return 0.0
+
+        hit_radius = (
+            self._center_to_puck_distance(0.0)
+            + self.shooting_puck_obstacle_radius
+        )
+        if puck_distance > hit_radius:
+            return 0.0
+
+        puck_angle = math.atan2(puck_dy, puck_dx)
+        ccw_sweep = self._positive_angle_delta(target_yaw, current_yaw)
+        cw_sweep = self._positive_angle_delta(current_yaw, target_yaw)
+        shortest_direction = 1.0 if ccw_sweep <= cw_sweep else -1.0
+
+        ccw_hits = self._angle_in_ccw_sweep(
+            puck_angle,
+            current_yaw,
+            ccw_sweep,
+            self.align_puck_angle_margin,
+        )
+        cw_hits = self._angle_in_ccw_sweep(
+            puck_angle,
+            target_yaw,
+            cw_sweep,
+            self.align_puck_angle_margin,
+        )
+
+        if shortest_direction > 0.0 and ccw_hits and not cw_hits:
+            self.get_logger().warning(
+                "Align CCW sweep may hit puck; rotating CW to target yaw instead."
+            )
+            return -1.0
+        if shortest_direction < 0.0 and cw_hits and not ccw_hits:
+            self.get_logger().warning(
+                "Align CW sweep may hit puck; rotating CCW to target yaw instead."
+            )
+            return 1.0
+        return 0.0
+
+    def _directed_yaw_error(
+        self,
+        target_yaw: float,
+        current_yaw: float,
+        direction: float,
+    ) -> float:
+        if direction > 0.0:
+            return self._positive_angle_delta(target_yaw, current_yaw)
+        return -self._positive_angle_delta(current_yaw, target_yaw)
+
+    def _positive_angle_delta(self, target_yaw: float, current_yaw: float) -> float:
+        return (target_yaw - current_yaw) % (2.0 * math.pi)
+
+    def _angle_in_ccw_sweep(
+        self,
+        angle: float,
+        start_yaw: float,
+        sweep: float,
+        margin: float,
+    ) -> bool:
+        delta = self._positive_angle_delta(angle, start_yaw)
+        return delta <= sweep + margin or delta >= 2.0 * math.pi - margin
 
     def _drive_to_shoot_pose(
         self,
@@ -605,7 +725,7 @@ class ShootingServer(Node):
             distance = math.hypot(dx, dy)
             if distance <= self.shooting_pose_position_tolerance:
                 self._stop_robot()
-                self._align_to_yaw(target_yaw, max_angular_speed)
+                self._align_to_yaw(target_yaw, max_angular_speed, avoid_puck=True)
                 return
             if time.monotonic() - start_time > self.shooting_pose_timeout_sec:
                 yaw_error = wrap_to_pi(target_yaw - robot_pose[2])
@@ -648,7 +768,7 @@ class ShootingServer(Node):
         if robot_pose is None or puck_pose is None:
             raise RuntimeError("stale pose during center-puck clearance check")
 
-        max_distance = self.safe_lookahead_distance + max(0.0, contact_gap)
+        max_distance = self._center_to_puck_distance(contact_gap)
         dx = robot_pose[0] - puck_pose[0]
         dy = robot_pose[1] - puck_pose[1]
         distance = math.hypot(dx, dy)
@@ -682,7 +802,7 @@ class ShootingServer(Node):
         goal_pose: Tuple[float, float, float],
         request: ShootPuck.Goal,
     ) -> Tuple[float, float]:
-        if request.role == "shooter":
+        if request.role in ("shooter", "single"):
             return goal_pose[0], goal_pose[1]
         return goal_pose[0] + request.offset_x, goal_pose[1] + request.offset_y
 
@@ -702,7 +822,7 @@ class ShootingServer(Node):
             normal_yaw = shoot_yaw - math.pi / 2.0
         else:
             normal_yaw = shoot_yaw + math.pi / 2.0
-        side_distance = self.safe_lookahead_distance + request.contact_gap
+        side_distance = self._center_to_puck_distance(request.contact_gap)
         robot_point = (
             puck_pose[0] - side_distance * math.cos(normal_yaw),
             puck_pose[1] - side_distance * math.sin(normal_yaw),
@@ -711,6 +831,14 @@ class ShootingServer(Node):
             shoot_yaw + math.pi + request.shooting_angle_offset
         )
         return robot_point, align_yaw, spin_speed
+
+    def _center_to_puck_distance(self, contact_gap: float) -> float:
+        self.shooting_center_to_puck_distance = float(
+            self.get_parameter("shooting_center_to_puck_distance").value
+        )
+        if self.shooting_center_to_puck_distance > 0.0:
+            return self.shooting_center_to_puck_distance
+        return self.safe_lookahead_distance + max(0.0, contact_gap)
 
     def _current_puck_distance(self, request: ShootPuck.Goal) -> float:
         puck_pose = self._fresh_puck_pose()

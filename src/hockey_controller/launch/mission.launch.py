@@ -65,11 +65,17 @@ def generate_launch_description() -> LaunchDescription:
 
     shooting_enabled = LaunchConfiguration("shooting_enabled")
     shooting_role = LaunchConfiguration("shooting_role")
+    team_name = LaunchConfiguration("team_name")
+    teammate_robot_id = LaunchConfiguration("teammate_robot_id")
+    team_wait_timeout_sec = LaunchConfiguration("team_wait_timeout_sec")
     shooting_offset_x = LaunchConfiguration("shooting_offset_x")
     shooting_offset_y = LaunchConfiguration("shooting_offset_y")
     shooting_target_radius = LaunchConfiguration("shooting_target_radius")
     shooting_approach_distance = LaunchConfiguration("shooting_approach_distance")
     shooting_contact_gap = LaunchConfiguration("shooting_contact_gap")
+    shooting_center_to_puck_distance = LaunchConfiguration(
+        "shooting_center_to_puck_distance"
+    )
     shooting_spin_direction = LaunchConfiguration("shooting_spin_direction")
     shooting_puck_obstacle_enabled = LaunchConfiguration(
         "shooting_puck_obstacle_enabled"
@@ -77,10 +83,13 @@ def generate_launch_description() -> LaunchDescription:
     shooting_puck_obstacle_radius = LaunchConfiguration(
         "shooting_puck_obstacle_radius"
     )
+    avoid_puck_during_align = LaunchConfiguration("avoid_puck_during_align")
+    align_puck_angle_margin_deg = LaunchConfiguration("align_puck_angle_margin_deg")
     shooting_angle_offset = LaunchConfiguration("shooting_angle_offset")
     shooting_linear_speed = LaunchConfiguration("shooting_linear_speed")
     shooting_angular_speed = LaunchConfiguration("shooting_angular_speed")
     shooting_spin_rotations = LaunchConfiguration("shooting_spin_rotations")
+    shooting_spin_angle_deg = LaunchConfiguration("shooting_spin_angle_deg")
     shooting_timeout_sec = LaunchConfiguration("shooting_timeout_sec")
     shooting_pose_timeout_sec = LaunchConfiguration("shooting_pose_timeout_sec")
     shooting_max_attempts = LaunchConfiguration("shooting_max_attempts")
@@ -205,22 +214,35 @@ def generate_launch_description() -> LaunchDescription:
 
             # Optional shooting phase after parking/pickup.
             DeclareLaunchArgument("shooting_enabled", default_value="false"),
-            DeclareLaunchArgument("shooting_role", default_value="shooter"),
+            DeclareLaunchArgument("shooting_role", default_value="single"),
+            DeclareLaunchArgument("team_name", default_value="team_rocket"),
+            DeclareLaunchArgument("teammate_robot_id", default_value="0"),
+            DeclareLaunchArgument("team_wait_timeout_sec", default_value="150.0"),
             DeclareLaunchArgument("shooting_offset_x", default_value="0.0"),
             DeclareLaunchArgument("shooting_offset_y", default_value="0.0"),
             DeclareLaunchArgument("shooting_target_radius", default_value="0.20"),
             DeclareLaunchArgument("shooting_approach_distance", default_value="0.05"),
             DeclareLaunchArgument("shooting_contact_gap", default_value="0.0"),
+            DeclareLaunchArgument(
+                "shooting_center_to_puck_distance",
+                default_value="-1.0",
+            ),
             DeclareLaunchArgument("shooting_spin_direction", default_value="ccw"),
             DeclareLaunchArgument(
                 "shooting_puck_obstacle_enabled",
                 default_value="true",
             ),
             DeclareLaunchArgument("shooting_puck_obstacle_radius", default_value="0.10"),
+            DeclareLaunchArgument("avoid_puck_during_align", default_value="true"),
+            DeclareLaunchArgument(
+                "align_puck_angle_margin_deg",
+                default_value="12.0",
+            ),
             DeclareLaunchArgument("shooting_angle_offset", default_value="0.0"),
             DeclareLaunchArgument("shooting_linear_speed", default_value="0.3"),
-            DeclareLaunchArgument("shooting_angular_speed", default_value="1.5"),
+            DeclareLaunchArgument("shooting_angular_speed", default_value="3.0"),
             DeclareLaunchArgument("shooting_spin_rotations", default_value="1"),
+            DeclareLaunchArgument("shooting_spin_angle_deg", default_value="30.0"),
             DeclareLaunchArgument("shooting_timeout_sec", default_value="150.0"),
             DeclareLaunchArgument(
                 "shooting_pose_timeout_sec",
@@ -358,11 +380,18 @@ def generate_launch_description() -> LaunchDescription:
                         "align_timeout_sec": align_timeout_sec,
                         "shooting_pose_timeout_sec": shooting_pose_timeout_sec,
                         "safe_lookahead_distance": safe_lookahead_distance,
+                        "shooting_center_to_puck_distance": (
+                            shooting_center_to_puck_distance
+                        ),
                         "shooting_puck_obstacle_enabled": (
                             shooting_puck_obstacle_enabled
                         ),
                         "shooting_puck_obstacle_radius": (
                             shooting_puck_obstacle_radius
+                        ),
+                        "avoid_puck_during_align": avoid_puck_during_align,
+                        "align_puck_angle_margin_deg": (
+                            align_puck_angle_margin_deg
                         ),
                     }
                 ],
@@ -438,6 +467,9 @@ def generate_launch_description() -> LaunchDescription:
                         "shooting_action": "shoot_puck",
                         "shooting_enabled": shooting_enabled,
                         "shooting_role": shooting_role,
+                        "team_name": team_name,
+                        "teammate_robot_id": teammate_robot_id,
+                        "team_wait_timeout_sec": team_wait_timeout_sec,
                         "shooting_offset_x": shooting_offset_x,
                         "shooting_offset_y": shooting_offset_y,
                         "shooting_target_radius": shooting_target_radius,
@@ -450,6 +482,7 @@ def generate_launch_description() -> LaunchDescription:
                         "shooting_linear_speed": shooting_linear_speed,
                         "shooting_angular_speed": shooting_angular_speed,
                         "shooting_spin_rotations": shooting_spin_rotations,
+                        "shooting_spin_angle_deg": shooting_spin_angle_deg,
                         "shooting_timeout_sec": shooting_timeout_sec,
                         "shooting_max_attempts": shooting_max_attempts,
                         "use_manipulator": use_manipulator,
@@ -498,6 +531,9 @@ def generate_launch_description() -> LaunchDescription:
                         "shooting_offset_y": shooting_offset_y,
                         "shooting_target_radius": shooting_target_radius,
                         "shooting_contact_gap": shooting_contact_gap,
+                        "shooting_center_to_puck_distance": (
+                            shooting_center_to_puck_distance
+                        ),
                         "shooting_spin_direction": shooting_spin_direction,
                         "shooting_puck_obstacle_enabled": (
                             shooting_puck_obstacle_enabled

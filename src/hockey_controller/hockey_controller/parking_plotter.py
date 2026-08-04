@@ -57,6 +57,7 @@ class ParkingPlotter(Node):
         self.declare_parameter("shooting_offset_y", 0.0)
         self.declare_parameter("shooting_target_radius", 0.20)
         self.declare_parameter("shooting_contact_gap", 0.0)
+        self.declare_parameter("shooting_center_to_puck_distance", -1.0)
         self.declare_parameter("shooting_spin_direction", "ccw")
         self.declare_parameter("shooting_puck_obstacle_enabled", True)
         self.declare_parameter("shooting_puck_obstacle_radius", 0.10)
@@ -101,6 +102,9 @@ class ParkingPlotter(Node):
         )
         self.shooting_contact_gap = float(
             self.get_parameter("shooting_contact_gap").value
+        )
+        self.shooting_center_to_puck_distance = float(
+            self.get_parameter("shooting_center_to_puck_distance").value
         )
         self.shooting_spin_direction = str(
             self.get_parameter("shooting_spin_direction").value
@@ -473,7 +477,7 @@ class ParkingPlotter(Node):
         else:
             normal_x = -uy
             normal_y = ux
-        side_distance = self.safe_lookahead_distance + self.shooting_contact_gap
+        side_distance = self._center_to_puck_distance()
         robot_x = puck_pose.x - side_distance * normal_x
         robot_y = puck_pose.y - side_distance * normal_y
         heading_x = -ux
@@ -521,6 +525,7 @@ class ParkingPlotter(Node):
             s=[45, 55, 55, 55],
             label="shooting geometry points",
         )
+
         self._axis.text(robot_x, robot_y, "R*", color="black", fontsize=9)
         self._axis.text(tip_x, tip_y, "T", color="tab:orange", fontsize=9)
         self._axis.text(puck_pose.x, puck_pose.y, "P", color="tab:blue", fontsize=9)
@@ -561,6 +566,14 @@ class ParkingPlotter(Node):
             (target_x - self.shooting_target_radius, target_y - self.shooting_target_radius),
             (target_x + self.shooting_target_radius, target_y + self.shooting_target_radius),
         ]
+
+    def _center_to_puck_distance(self) -> float:
+        self.shooting_center_to_puck_distance = float(
+            self.get_parameter("shooting_center_to_puck_distance").value
+        )
+        if self.shooting_center_to_puck_distance > 0.0:
+            return self.shooting_center_to_puck_distance
+        return self.safe_lookahead_distance + max(0.0, self.shooting_contact_gap)
 
     def _draw_circle(self, marker: Marker) -> List[Tuple[float, float]]:
         x = marker.pose.position.x

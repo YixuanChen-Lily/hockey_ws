@@ -9,6 +9,7 @@ float64 shooting_angle_offset
 float64 linear_speed
 float64 angular_speed
 int32 spin_rotations
+float64 spin_angle_deg
 float64 timeout_sec
 int32 max_attempts
 ---

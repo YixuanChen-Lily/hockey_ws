@@ -1,4 +1,5 @@
 int32 rotations
+float64 spin_angle_deg
 float64 angular_speed
 float64 timeout_sec
 ---

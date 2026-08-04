@@ -109,8 +109,15 @@ class SpinServer(Node):
             self._latest_pose_time = self.get_clock().now()
 
     def _goal_callback(self, request: Spin.Goal) -> GoalResponse:
-        if request.rotations <= 0:
-            self.get_logger().warning("Rejected goal: rotations must be positive.")
+        if request.spin_angle_deg < 0.0 or not math.isfinite(request.spin_angle_deg):
+            self.get_logger().warning(
+                "Rejected goal: spin_angle_deg must be non-negative."
+            )
+            return GoalResponse.REJECT
+        if request.spin_angle_deg <= 0.0 and request.rotations <= 0:
+            self.get_logger().warning(
+                "Rejected goal: rotations must be positive when spin_angle_deg is 0."
+            )
             return GoalResponse.REJECT
         if request.angular_speed == 0.0 or not math.isfinite(request.angular_speed):
             self.get_logger().warning("Rejected goal: angular_speed must be non-zero.")
@@ -137,7 +144,12 @@ class SpinServer(Node):
         result = Spin.Result()
         feedback = Spin.Feedback()
         state = SpinState.WAIT_FOR_POSE
-        target_rotation = 2.0 * math.pi * float(request.rotations)
+        if request.spin_angle_deg > 0.0:
+            target_rotation = math.radians(float(request.spin_angle_deg))
+            target_description = f"{request.spin_angle_deg:.1f} degrees"
+        else:
+            target_rotation = 2.0 * math.pi * float(request.rotations)
+            target_description = f"{request.rotations} rotations"
         spin_direction = 1.0 if request.angular_speed >= 0.0 else -1.0
         accumulated_rotation = 0.0
         previous_yaw = None
@@ -205,7 +217,7 @@ class SpinServer(Node):
                 if state == SpinState.DONE:
                     goal_handle.succeed()
                     result.success = True
-                    result.message = f"Completed {request.rotations} rotations."
+                    result.message = f"Completed {target_description}."
                     result.rotation_completed = accumulated_rotation
                     self.get_logger().info(result.message)
                     return result
