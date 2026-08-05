@@ -275,8 +275,13 @@ class ShootingServer(Node):
                     time.sleep(0.05)
                     continue
 
-                target = self._target_point(goal_pose, request)
-                puck_distance = self._distance(puck_pose, target)
+                (
+                    target,
+                    puck_distance,
+                    robot_point,
+                    align_yaw,
+                    spin_speed,
+                ) = self._shot_geometry(puck_pose, goal_pose, request)
                 self._publish_feedback(
                     goal_handle,
                     feedback,
@@ -312,15 +317,6 @@ class ShootingServer(Node):
                     return result
 
                 attempts += 1
-                shoot_yaw = math.atan2(
-                    target[1] - puck_pose[1],
-                    target[0] - puck_pose[0],
-                )
-                robot_point, align_yaw, spin_speed = self._spin_shot_pose(
-                    puck_pose,
-                    shoot_yaw,
-                    request,
-                )
 
                 self._publish_feedback(
                     goal_handle,
@@ -337,6 +333,17 @@ class ShootingServer(Node):
                     request.timeout_sec,
                 )
                 self._clear_puck_obstacle()
+                puck_pose = self._fresh_puck_pose()
+                goal_pose = self._fresh_goal_pose()
+                if puck_pose is None or goal_pose is None:
+                    raise RuntimeError("stale puck or goal pose after approach")
+                (
+                    target,
+                    puck_distance,
+                    robot_point,
+                    align_yaw,
+                    spin_speed,
+                ) = self._shot_geometry(puck_pose, goal_pose, request)
 
                 self._publish_feedback(
                     goal_handle,
@@ -582,6 +589,14 @@ class ShootingServer(Node):
             if goal_handle.is_cancel_requested:
                 return False, puck_distance
             puck_distance = self._current_puck_distance(request)
+            time_remaining = max(0.0, wait_until - time.monotonic())
+            self.get_logger().info(
+                "post-hit puck check: "
+                f"distance={puck_distance:.3f}, "
+                f"target_radius={request.target_radius:.3f}, "
+                f"reached={puck_distance <= request.target_radius}, "
+                f"wait_remaining={time_remaining:.2f}s"
+            )
             self._publish_feedback(
                 goal_handle,
                 feedback,
@@ -783,11 +798,12 @@ class ShootingServer(Node):
         if robot_pose is None or puck_pose is None:
             raise RuntimeError("stale pose during center-puck clearance check")
 
-        max_distance = self._center_to_puck_distance(contact_gap)
+        target_distance = self._center_to_puck_distance(contact_gap)
         dx = robot_pose[0] - puck_pose[0]
         dy = robot_pose[1] - puck_pose[1]
         distance = math.hypot(dx, dy)
-        if distance <= max_distance:
+        distance_error = distance - target_distance
+        if abs(distance_error) <= self.shooting_pose_position_tolerance:
             return
 
         if distance < 1e-6:
@@ -797,13 +813,13 @@ class ShootingServer(Node):
             toward_robot_x = dx / distance
             toward_robot_y = dy / distance
         corrected_target = (
-            puck_pose[0] + max_distance * toward_robot_x,
-            puck_pose[1] + max_distance * toward_robot_y,
+            puck_pose[0] + target_distance * toward_robot_x,
+            puck_pose[1] + target_distance * toward_robot_y,
         )
         self.get_logger().warning(
-            "Robot center too far from puck before spin: "
-            f"distance={distance:.3f}m, allowed={max_distance:.3f}m. "
-            "Moving closer before hit."
+            "Robot center not at puck hit distance before spin: "
+            f"distance={distance:.3f}m, target={target_distance:.3f}m, "
+            f"error={distance_error:.3f}m. Moving to corrected hit distance."
         )
         self._drive_to_point_then_align(
             corrected_target,
@@ -832,6 +848,25 @@ class ShootingServer(Node):
             + request.offset_y * cos_goal
         )
         return target_x, target_y
+
+    def _shot_geometry(
+        self,
+        puck_pose: Tuple[float, float, float],
+        goal_pose: Tuple[float, float, float],
+        request: ShootPuck.Goal,
+    ):
+        target = self._target_point(goal_pose, request)
+        puck_distance = self._distance(puck_pose, target)
+        shoot_yaw = math.atan2(
+            target[1] - puck_pose[1],
+            target[0] - puck_pose[0],
+        )
+        robot_point, align_yaw, spin_speed = self._spin_shot_pose(
+            puck_pose,
+            shoot_yaw,
+            request,
+        )
+        return target, puck_distance, robot_point, align_yaw, spin_speed
 
     def _spin_shot_pose(
         self,

@@ -32,7 +32,6 @@ from robomaster_msgs.action import MoveArm
 from hockey_controller.cushion_parking_planner import CushionGeometry
 from hockey_controller.cushion_parking_planner import ParkingPlannerConfig
 from hockey_controller.cushion_parking_planner import plan_parking_route
-from hockey_controller.control_utils import clamp
 from hockey_controller.control_utils import wrap_to_pi
 from hockey_controller.control_utils import yaw_from_quaternion
 from hockey_controller.parking_markers import marker_array_type
@@ -608,29 +607,34 @@ class MissionManager(Node):
             raise RuntimeError(outcome["message"])
 
     def _align_to_yaw(self, target_yaw: float) -> None:
-        start_time = monotonic()
-        while rclpy.ok() and not self._stop_requested:
-            pose = self._fresh_robot_pose()
-            if pose is None:
-                raise RuntimeError("stale robot pose during align")
-            error = wrap_to_pi(target_yaw - pose[2])
-            if abs(error) <= self.final_yaw_tolerance:
-                self._stop_robot()
-                return
-            if monotonic() - start_time > self.align_timeout_sec:
-                raise RuntimeError(
-                    f"align timeout: target={target_yaw:.3f}, "
-                    f"current={pose[2]:.3f}, error={error:.3f}"
-                )
-            twist = Twist()
-            twist.angular.z = clamp(
-                self.align_gain * error,
-                -self.angular_speed,
-                self.angular_speed,
-            )
-            self.cmd_vel_pub.publish(twist)
-            Event().wait(0.05)
-        raise RuntimeError("Mission stopped during align")
+        pose = self._fresh_robot_pose()
+        if pose is None:
+            raise RuntimeError("stale robot pose during align")
+        error = wrap_to_pi(target_yaw - pose[2])
+        self.get_logger().info(
+            "parking align check: "
+            f"target_yaw={target_yaw:.3f}, "
+            f"current_yaw={pose[2]:.3f}, "
+            f"error={error:.3f}, "
+            f"tolerance={self.final_yaw_tolerance:.3f}"
+        )
+        if abs(error) <= self.final_yaw_tolerance:
+            self._stop_robot()
+            self.get_logger().info("parking align skipped: already within tolerance")
+            return
+
+        goal = Spin.Goal()
+        goal.rotations = 0
+        goal.spin_angle_deg = math.degrees(abs(error))
+        goal.angular_speed = math.copysign(abs(self.angular_speed), error)
+        goal.timeout_sec = self.align_timeout_sec
+        self.get_logger().info(
+            "parking align spin goal: "
+            f"spin_angle_deg={goal.spin_angle_deg:.1f}, "
+            f"angular_speed={goal.angular_speed:.3f}, "
+            f"timeout={goal.timeout_sec:.1f}s"
+        )
+        self._send_goal(self.spin_client, goal, self._spin_feedback)
 
     def _pick_up_stick(self) -> None:
         self._status("PICK_UP_STICK")
