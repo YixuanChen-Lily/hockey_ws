@@ -84,9 +84,10 @@ def generate_launch_description() -> LaunchDescription:
     shooting_timeout_sec = LaunchConfiguration("shooting_timeout_sec")
     shooting_pose_timeout_sec = LaunchConfiguration("shooting_pose_timeout_sec")
     shooting_max_attempts = LaunchConfiguration("shooting_max_attempts")
-    driver_wait_timeout_sec = LaunchConfiguration("driver_wait_timeout_sec")
-
     use_manipulator = LaunchConfiguration("use_manipulator")
+    reset_arm_x = LaunchConfiguration("reset_arm_x")
+    reset_arm_z = LaunchConfiguration("reset_arm_z")
+    reset_arm_settle_sec = LaunchConfiguration("reset_arm_settle_sec")
     grab_arm_x = LaunchConfiguration("grab_arm_x")
     grab_arm_z = LaunchConfiguration("grab_arm_z")
     grab_arm_relative = LaunchConfiguration("grab_arm_relative")
@@ -230,6 +231,10 @@ def generate_launch_description() -> LaunchDescription:
 
             # Stick pickup is part of this mission.
             DeclareLaunchArgument("use_manipulator", default_value="true"),
+            # Reset the arm to this absolute pose before every mission.
+            DeclareLaunchArgument("reset_arm_x", default_value="0.0"),
+            DeclareLaunchArgument("reset_arm_z", default_value="0.0"),
+            DeclareLaunchArgument("reset_arm_settle_sec", default_value="0.5"),
             DeclareLaunchArgument("grab_arm_x", default_value="0.3"),
             DeclareLaunchArgument("grab_arm_z", default_value="0.3"),
             DeclareLaunchArgument("grab_arm_relative", default_value="false"),
@@ -270,10 +275,6 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("ready_arm_z", default_value="0.0"),
             DeclareLaunchArgument("ready_arm_relative", default_value="false"),
             DeclareLaunchArgument("ready_arm_settle_sec", default_value="0.5"),
-            DeclareLaunchArgument(
-                "driver_wait_timeout_sec",
-                default_value="150.0",
-            ),
             DeclareLaunchArgument("plotter_enabled", default_value="false"),
             DeclareLaunchArgument("plotter_show_gui", default_value="false"),
             DeclareLaunchArgument(
@@ -369,34 +370,6 @@ def generate_launch_description() -> LaunchDescription:
             ),
             Node(
                 package="hockey_controller",
-                executable="move_arm_server",
-                name="move_arm_server",
-                namespace=namespace,
-                output="screen",
-                condition=IfCondition(use_manipulator),
-                parameters=[
-                    {
-                        "robot_id": robot_id,
-                        "driver_wait_timeout_sec": driver_wait_timeout_sec,
-                    }
-                ],
-            ),
-            Node(
-                package="hockey_controller",
-                executable="gripper_control_server",
-                name="gripper_control_server",
-                namespace=namespace,
-                output="screen",
-                condition=IfCondition(use_manipulator),
-                parameters=[
-                    {
-                        "robot_id": robot_id,
-                        "driver_wait_timeout_sec": driver_wait_timeout_sec,
-                    }
-                ],
-            ),
-            Node(
-                package="hockey_controller",
                 executable="mission_manager",
                 name="mission_manager",
                 namespace=namespace,
@@ -453,6 +426,9 @@ def generate_launch_description() -> LaunchDescription:
                         "shooting_timeout_sec": shooting_timeout_sec,
                         "shooting_max_attempts": shooting_max_attempts,
                         "use_manipulator": use_manipulator,
+                        "reset_arm_x": reset_arm_x,
+                        "reset_arm_z": reset_arm_z,
+                        "reset_arm_settle_sec": reset_arm_settle_sec,
                         "grab_arm_x": grab_arm_x,
                         "grab_arm_z": grab_arm_z,
                         "grab_arm_relative": grab_arm_relative,

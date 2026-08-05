@@ -7,7 +7,7 @@ docker exec -it hockey /ros_entrypoint.sh /bin/bash -ic '
 	colcon build --packages-select hockey_interfaces hockey_controller --symlink-install
 	source install/setup.bash
 	ros2 launch hockey_controller mission.launch.py \
-	robot_id:=2 \
+	robot_id:=1 \
 	target_pose_topic:=/vrpn_mocap/hockey_sticks_1/pose \
 	cushion_length:=0.3 \
 	cushion_width:=0.42 \
