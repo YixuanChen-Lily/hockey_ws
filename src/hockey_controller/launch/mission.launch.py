@@ -13,21 +13,10 @@ def generate_launch_description() -> LaunchDescription:
     puck_pose_topic = LaunchConfiguration("puck_pose_topic")
     goal_pose_topic = LaunchConfiguration("goal_pose_topic")
 
-    safe_qp_solver = LaunchConfiguration("safe_qp_solver")
     safe_lookahead_distance = LaunchConfiguration("safe_lookahead_distance")
     safe_dynamic_robot_ids = ParameterValue(
         LaunchConfiguration("safe_dynamic_robot_ids"),
         value_type=str,
-    )
-    safe_dynamic_obstacles_required = LaunchConfiguration(
-        "safe_dynamic_obstacles_required"
-    )
-    safe_dynamic_controlled_robot_radius = LaunchConfiguration(
-        "safe_dynamic_controlled_robot_radius"
-    )
-    safe_dynamic_robot_radius = LaunchConfiguration("safe_dynamic_robot_radius")
-    safe_dynamic_robot_safety_margin = LaunchConfiguration(
-        "safe_dynamic_robot_safety_margin"
     )
 
     parking_enabled = LaunchConfiguration("parking_enabled")
@@ -45,16 +34,13 @@ def generate_launch_description() -> LaunchDescription:
     parking_safety_margin = LaunchConfiguration("parking_safety_margin")
     parking_lookahead_distance = LaunchConfiguration("parking_lookahead_distance")
     final_approach_speed = LaunchConfiguration("final_approach_speed")
-    final_approach_point_gain = LaunchConfiguration("final_approach_point_gain")
 
     linear_speed = LaunchConfiguration("linear_speed")
     angular_speed = LaunchConfiguration("angular_speed")
     pose_timeout_sec = LaunchConfiguration("pose_timeout_sec")
-    target_pose_timeout_sec = LaunchConfiguration("target_pose_timeout_sec")
     dynamic_obstacle_timeout_sec = LaunchConfiguration(
         "dynamic_obstacle_timeout_sec"
     )
-    navigation_timeout_sec = LaunchConfiguration("navigation_timeout_sec")
     safe_navigation_timeout_sec = LaunchConfiguration(
         "safe_navigation_timeout_sec"
     )
@@ -137,28 +123,10 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="/vrpn_mocap/goal/pose",
             ),
 
-            # QP solver backend for the linearized CLF-CBF-QP controller.
-            DeclareLaunchArgument("safe_qp_solver", default_value="cvxopt"),
             DeclareLaunchArgument("safe_lookahead_distance", default_value="0.25"),
 
             # Dynamic robot obstacles. Leave ids empty to disable.
             DeclareLaunchArgument("safe_dynamic_robot_ids", default_value="[]"),
-            DeclareLaunchArgument(
-                "safe_dynamic_obstacles_required",
-                default_value="true",
-            ),
-            DeclareLaunchArgument(
-                "safe_dynamic_controlled_robot_radius",
-                default_value="0.18",
-            ),
-            DeclareLaunchArgument(
-                "safe_dynamic_robot_radius",
-                default_value="0.18",
-            ),
-            DeclareLaunchArgument(
-                "safe_dynamic_robot_safety_margin",
-                default_value="0.10",
-            ),
 
             # Parking geometry and route planning.
             DeclareLaunchArgument("parking_enabled", default_value="true"),
@@ -179,22 +147,13 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("parking_safety_margin", default_value="0.10"),
             DeclareLaunchArgument("parking_lookahead_distance", default_value="0.25"),
             DeclareLaunchArgument("final_approach_speed", default_value="0.12"),
-            DeclareLaunchArgument("final_approach_point_gain", default_value="0.35"),
 
             # Mission-level speed and timeout knobs.
             DeclareLaunchArgument("linear_speed", default_value="0.4"),
             DeclareLaunchArgument("angular_speed", default_value="0.8"),
             DeclareLaunchArgument("pose_timeout_sec", default_value="150.0"),
             DeclareLaunchArgument(
-                "target_pose_timeout_sec",
-                default_value="150.0",
-            ),
-            DeclareLaunchArgument(
                 "dynamic_obstacle_timeout_sec",
-                default_value="150.0",
-            ),
-            DeclareLaunchArgument(
-                "navigation_timeout_sec",
                 default_value="150.0",
             ),
             DeclareLaunchArgument(
@@ -305,19 +264,6 @@ def generate_launch_description() -> LaunchDescription:
 
             Node(
                 package="hockey_controller",
-                executable="navigation_server",
-                name="navigation_server",
-                namespace=namespace,
-                output="screen",
-                parameters=[
-                    {
-                        "robot_id": robot_id,
-                        "pose_timeout_sec": pose_timeout_sec,
-                    }
-                ],
-            ),
-            Node(
-                package="hockey_controller",
                 executable="safe_navigation_server",
                 name="safe_navigation_server",
                 namespace=namespace,
@@ -326,25 +272,8 @@ def generate_launch_description() -> LaunchDescription:
                     {
                         "robot_id": robot_id,
                         "action_name": "safe_navigate_to_point",
-                        "qp_solver": safe_qp_solver,
-                        "lookahead_distance": safe_lookahead_distance,
                         "dynamic_robot_ids": safe_dynamic_robot_ids,
-                        "dynamic_obstacles_required": (
-                            safe_dynamic_obstacles_required
-                        ),
-                        "dynamic_controlled_robot_radius": (
-                            safe_dynamic_controlled_robot_radius
-                        ),
-                        "dynamic_robot_radius": safe_dynamic_robot_radius,
-                        "dynamic_robot_safety_margin": (
-                            safe_dynamic_robot_safety_margin
-                        ),
                         "target_pose_topic": target_pose_topic,
-                        "pose_timeout_sec": pose_timeout_sec,
-                        "target_pose_timeout_sec": target_pose_timeout_sec,
-                        "dynamic_obstacle_timeout_sec": (
-                            dynamic_obstacle_timeout_sec
-                        ),
                     }
                 ],
             ),
@@ -432,11 +361,11 @@ def generate_launch_description() -> LaunchDescription:
                 output="screen",
                 parameters=[
                     {
-                        "navigation_action": "navigate_to_point",
                         "safe_navigation_action": "safe_navigate_to_point",
                         "spin_action": "spin",
                         "robot_id": robot_id,
                         "cushion_pose_topic": target_pose_topic,
+                        "goal_pose_topic": goal_pose_topic,
                         "parking_enabled": parking_enabled,
                         "cushion_length": cushion_length,
                         "cushion_width": cushion_width,
@@ -452,11 +381,9 @@ def generate_launch_description() -> LaunchDescription:
                         "parking_safety_margin": parking_safety_margin,
                         "parking_lookahead_distance": parking_lookahead_distance,
                         "final_approach_speed": final_approach_speed,
-                        "final_approach_point_gain": final_approach_point_gain,
                         "linear_speed": linear_speed,
                         "angular_speed": angular_speed,
                         "pose_timeout_sec": pose_timeout_sec,
-                        "navigation_timeout_sec": navigation_timeout_sec,
                         "safe_navigation_timeout_sec": (
                             safe_navigation_timeout_sec
                         ),

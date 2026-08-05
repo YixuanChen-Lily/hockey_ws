@@ -69,9 +69,9 @@ class ParkingPlotter(Node):
             "dynamic_pose_topic_template",
             "/vrpn_mocap/dji_robot_{robot_id}/pose",
         )
-        self.declare_parameter("dynamic_controlled_robot_radius", 0.18)
+        self.declare_parameter("dynamic_controlled_robot_radius", 0.0)
         self.declare_parameter("dynamic_robot_radius", 0.18)
-        self.declare_parameter("dynamic_robot_safety_margin", 0.10)
+        self.declare_parameter("dynamic_robot_safety_margin", 0.0)
         self.declare_parameter("dynamic_obstacle_timeout_sec", 150.0)
 
         robot_id = int(self.get_parameter("robot_id").value)
@@ -459,9 +459,17 @@ class ParkingPlotter(Node):
 
         target_x = goal_pose.x
         target_y = goal_pose.y
-        if self.shooting_role == "passer":
-            target_x += self.shooting_offset_x
-            target_y += self.shooting_offset_y
+        if self.shooting_role in ("passer", "single"):
+            cos_goal = math.cos(goal_pose.yaw)
+            sin_goal = math.sin(goal_pose.yaw)
+            target_x += (
+                self.shooting_offset_x * cos_goal
+                - self.shooting_offset_y * sin_goal
+            )
+            target_y += (
+                self.shooting_offset_x * sin_goal
+                + self.shooting_offset_y * cos_goal
+            )
 
         dx = target_x - puck_pose.x
         dy = target_y - puck_pose.y

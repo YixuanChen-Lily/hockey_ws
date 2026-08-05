@@ -19,9 +19,9 @@ from rclpy.qos import qos_profile_sensor_data
 from hockey_interfaces.action import NavigateToPoint
 from hockey_interfaces.action import ShootPuck
 from hockey_interfaces.action import Spin
-from hockey_controller.navigation_server import clamp
-from hockey_controller.navigation_server import wrap_to_pi
-from hockey_controller.navigation_server import yaw_from_quaternion
+from hockey_controller.control_utils import clamp
+from hockey_controller.control_utils import wrap_to_pi
+from hockey_controller.control_utils import yaw_from_quaternion
 
 
 class ShootingState(Enum):
@@ -430,6 +430,12 @@ class ShootingServer(Node):
         angular_speed: float,
         timeout_sec: float,
     ) -> None:
+        self._set_safe_nav_parameters(
+            {
+                "use_target_pose": False,
+                "orient_to_target": False,
+            }
+        )
         goal = NavigateToPoint.Goal()
         goal.target_x = float(point[0])
         goal.target_y = float(point[1])
@@ -491,7 +497,6 @@ class ShootingServer(Node):
         )
         self._set_safe_nav_parameters(
             {
-                "obstacles_enabled": True,
                 "obstacle_x": [puck_pose[0]],
                 "obstacle_y": [puck_pose[1]],
                 "obstacle_radius": [self.shooting_puck_obstacle_radius],
@@ -802,9 +807,21 @@ class ShootingServer(Node):
         goal_pose: Tuple[float, float, float],
         request: ShootPuck.Goal,
     ) -> Tuple[float, float]:
-        if request.role in ("shooter", "single"):
+        if request.role == "shooter":
             return goal_pose[0], goal_pose[1]
-        return goal_pose[0] + request.offset_x, goal_pose[1] + request.offset_y
+        cos_goal = math.cos(goal_pose[2])
+        sin_goal = math.sin(goal_pose[2])
+        target_x = (
+            goal_pose[0]
+            + request.offset_x * cos_goal
+            - request.offset_y * sin_goal
+        )
+        target_y = (
+            goal_pose[1]
+            + request.offset_x * sin_goal
+            + request.offset_y * cos_goal
+        )
+        return target_x, target_y
 
     def _spin_shot_pose(
         self,

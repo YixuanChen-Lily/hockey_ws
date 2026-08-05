@@ -1,6 +1,9 @@
 import math
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Tuple
+
+import numpy as np
+from qpsolvers import solve_qp
 
 
 @dataclass(frozen=True)
@@ -44,11 +47,7 @@ class QpResult:
     dynamic_cbfs: Tuple[CbfValue, ...] = ()
 
 
-def obstacle_arrays_valid(
-    obstacle_x: Sequence[float],
-    obstacle_y: Sequence[float],
-    obstacle_radius: Sequence[float],
-) -> bool:
+def obstacle_arrays_valid(obstacle_x, obstacle_y, obstacle_radius):
     if len(obstacle_x) != len(obstacle_y):
         return False
     if len(obstacle_x) != len(obstacle_radius):
@@ -56,156 +55,85 @@ def obstacle_arrays_valid(
     return all(radius >= 0.0 for radius in obstacle_radius)
 
 
-def compute_nominal_point_velocity(
-    point_x: float,
-    point_y: float,
-    goal_x: float,
-    goal_y: float,
-    point_gain: float,
-) -> Tuple[float, float]:
+def get_u_nom(p_x, p_y, g_x, g_y, K):
     return (
-        point_gain * (goal_x - point_x),
-        point_gain * (goal_y - point_y),
+        K * (g_x - p_x),
+        K * (g_y - p_y),
     )
 
 
-def compute_clf_values(
-    point_x: float,
-    point_y: float,
-    goal_x: float,
-    goal_y: float,
-    u_x: float,
-    u_y: float,
-    delta: float,
-    clf_gain: float,
-) -> ClfValues:
-    error_x = point_x - goal_x
-    error_y = point_y - goal_y
-    value = 0.5 * (error_x * error_x + error_y * error_y)
-    residual = (
-        error_x * u_x
-        + error_y * u_y
-        + clf_gain * value
-        - delta
-    )
+def compute_clf_values(p_x, p_y, g_x, g_y, u_x, u_y, delta, clf_gamma):
+    e_x = p_x - g_x
+    e_y = p_y - g_y
+    value = 0.5 * (e_x**2 + e_y**2)
+    residual = e_x * u_x + e_y * u_y + clf_gamma * value - delta
     return ClfValues(v=value, residual=residual)
 
 
-def compute_cbf_values(
-    point_x: float,
-    point_y: float,
-    u_x: float,
-    u_y: float,
-    obstacles: Sequence[CircularObstacle],
-    cbf_gain: float,
-) -> Tuple[CbfValue, ...]:
+def compute_cbf_values(p_x, p_y, u_x, u_y, obstacles, cbf_gamma):
     values = []
     for obstacle in obstacles:
-        dx = point_x - obstacle.x
-        dy = point_y - obstacle.y
-        h = dx * dx + dy * dy - obstacle.radius * obstacle.radius
-        residual = 2.0 * dx * u_x + 2.0 * dy * u_y + cbf_gain * h
+        dx = p_x - obstacle.x
+        dy = p_y - obstacle.y
+        h = dx**2 + dy**2 - obstacle.radius**2
+        residual = 2.0 * dx * u_x + 2.0 * dy * u_y + cbf_gamma * h
         values.append(CbfValue(h=h, residual=residual))
     return tuple(values)
 
 
-def compute_dynamic_cbf_values(
-    point_x: float,
-    point_y: float,
-    u_x: float,
-    u_y: float,
-    obstacles: Sequence[DynamicCircularObstacle],
-    cbf_gain: float,
-) -> Tuple[CbfValue, ...]:
+def compute_dynamic_cbf_values(p_x, p_y, u_x, u_y, obstacles, cbf_gamma):
     values = []
     for obstacle in obstacles:
-        dx = point_x - obstacle.x
-        dy = point_y - obstacle.y
-        h = dx * dx + dy * dy - obstacle.radius * obstacle.radius
+        dx = p_x - obstacle.x
+        dy = p_y - obstacle.y
+        h = dx**2 + dy**2 - obstacle.radius**2
         residual = (
             2.0 * dx * (u_x - obstacle.velocity_x)
             + 2.0 * dy * (u_y - obstacle.velocity_y)
-            + cbf_gain * h
+            + cbf_gamma * h
         )
         values.append(CbfValue(h=h, residual=residual))
     return tuple(values)
 
 
 def solve_clf_cbf_qp(
-    point_x: float,
-    point_y: float,
-    goal_x: float,
-    goal_y: float,
-    u_nom_x: float,
-    u_nom_y: float,
-    obstacles: Sequence[CircularObstacle],
-    clf_gain: float,
-    cbf_gain: float,
-    slack_weight: float,
-    max_point_speed: float,
-    qp_solver: str = "cvxopt",
-    qp_verbose: bool = False,
-    dynamic_obstacles: Sequence[DynamicCircularObstacle] = (),
-    dynamic_cbf_gain: Optional[float] = None,
-) -> QpResult:
-    dynamic_gain = cbf_gain if dynamic_cbf_gain is None else dynamic_cbf_gain
-    return _solve_clf_cbf_qp_qpsolvers(
-        point_x,
-        point_y,
-        goal_x,
-        goal_y,
-        u_nom_x,
-        u_nom_y,
-        obstacles,
-        clf_gain,
-        cbf_gain,
-        slack_weight,
-        max_point_speed,
-        qp_solver,
-        qp_verbose,
-        dynamic_obstacles,
-        dynamic_gain,
-    )
+    p_x,
+    p_y,
+    g_x,
+    g_y,
+    u_nom_x,
+    u_nom_y,
+    obstacles,
+    clf_gamma,
+    cbf_gamma,
+    w_delta,
+    max_point_speed,
+    qp_solver="cvxopt",
+    dynamic_obstacles=(),
+    dynamic_cbf_gamma=None,
+):
+    dynamic_gamma = cbf_gamma if dynamic_cbf_gamma is None else dynamic_cbf_gamma
+    e_x = p_x - g_x
+    e_y = p_y - g_y
+    value = 0.5 * (e_x**2 + e_y**2)
 
-
-def _solve_clf_cbf_qp_qpsolvers(
-    point_x: float,
-    point_y: float,
-    goal_x: float,
-    goal_y: float,
-    u_nom_x: float,
-    u_nom_y: float,
-    obstacles: Sequence[CircularObstacle],
-    clf_gain: float,
-    cbf_gain: float,
-    slack_weight: float,
-    max_point_speed: float,
-    qp_solver: str,
-    qp_verbose: bool,
-    dynamic_obstacles: Sequence[DynamicCircularObstacle],
-    dynamic_cbf_gain: float,
-) -> QpResult:
-    error_x = point_x - goal_x
-    error_y = point_y - goal_y
-    value = 0.5 * (error_x * error_x + error_y * error_y)
-
-    constraints_a = [(error_x, error_y, -1.0)]
-    constraints_b = [-clf_gain * value]
+    constraints_a = [(e_x, e_y, -1.0)]
+    constraints_b = [-clf_gamma * value]
 
     for obstacle in obstacles:
-        dx = point_x - obstacle.x
-        dy = point_y - obstacle.y
-        h = dx * dx + dy * dy - obstacle.radius * obstacle.radius
+        dx = p_x - obstacle.x
+        dy = p_y - obstacle.y
+        h = dx**2 + dy**2 - obstacle.radius**2
         constraints_a.append((-2.0 * dx, -2.0 * dy, 0.0))
-        constraints_b.append(cbf_gain * h)
+        constraints_b.append(cbf_gamma * h)
 
     for obstacle in dynamic_obstacles:
-        dx = point_x - obstacle.x
-        dy = point_y - obstacle.y
-        h = dx * dx + dy * dy - obstacle.radius * obstacle.radius
+        dx = p_x - obstacle.x
+        dy = p_y - obstacle.y
+        h = dx**2 + dy**2 - obstacle.radius**2
         constraints_a.append((-2.0 * dx, -2.0 * dy, 0.0))
         constraints_b.append(
-            dynamic_cbf_gain * h
+            dynamic_gamma * h
             - 2.0 * dx * obstacle.velocity_x
             - 2.0 * dy * obstacle.velocity_y
         )
@@ -229,81 +157,85 @@ def _solve_clf_cbf_qp_qpsolvers(
         ]
     )
 
-    solution = _solve_qp_with_qpsolvers(
-        (2.0, 2.0, 2.0 * slack_weight),
-        (-2.0 * u_nom_x, -2.0 * u_nom_y, 0.0),
-        constraints_a,
-        constraints_b,
-        qp_solver,
-        qp_verbose,
-    )
-    if not solution.success:
-        return solution
+    h_diag = (2.0, 2.0, 2.0 * w_delta)
+    linear = (-2.0 * u_nom_x, -2.0 * u_nom_y, 0.0)
+    P = np.diag(np.array(h_diag, dtype=float))
+    q = np.array(linear, dtype=float)
+    G = np.array(constraints_a, dtype=float)
+    h = np.array(constraints_b, dtype=float)
+
+    solution = solve_qp(P, q, G=G, h=h, solver=qp_solver)
+    if solution is None:
+        return QpResult(success=False, status="infeasible")
+
+    values = tuple(float(value) for value in solution[:3])
+    if not _all_finite(values):
+        return QpResult(success=False, status="non-finite solution")
 
     return _build_qp_result(
-        point_x,
-        point_y,
-        goal_x,
-        goal_y,
-        solution.u_x,
-        solution.u_y,
-        solution.delta,
+        p_x,
+        p_y,
+        g_x,
+        g_y,
+        values[0],
+        values[1],
+        values[2],
         u_nom_x,
         u_nom_y,
         obstacles,
-        clf_gain,
-        cbf_gain,
-        slack_weight,
-        solution.status,
+        clf_gamma,
+        cbf_gamma,
+        w_delta,
+        f"qpsolvers_{qp_solver}",
         dynamic_obstacles,
-        dynamic_cbf_gain,
+        dynamic_gamma,
     )
 
 
 def _build_qp_result(
-    point_x: float,
-    point_y: float,
-    goal_x: float,
-    goal_y: float,
-    u_x: float,
-    u_y: float,
-    delta: float,
-    u_nom_x: float,
-    u_nom_y: float,
-    obstacles: Sequence[CircularObstacle],
-    clf_gain: float,
-    cbf_gain: float,
-    slack_weight: float,
-    status: str,
-    dynamic_obstacles: Sequence[DynamicCircularObstacle] = (),
-    dynamic_cbf_gain: Optional[float] = None,
-) -> QpResult:
+    p_x,
+    p_y,
+    g_x,
+    g_y,
+    u_x,
+    u_y,
+    delta,
+    u_nom_x,
+    u_nom_y,
+    obstacles,
+    clf_gamma,
+    cbf_gamma,
+    w_delta,
+    status,
+    dynamic_obstacles=(),
+    dynamic_cbf_gamma=None,
+):
     clf = compute_clf_values(
-        point_x,
-        point_y,
-        goal_x,
-        goal_y,
+        p_x,
+        p_y,
+        g_x,
+        g_y,
         u_x,
         u_y,
         delta,
-        clf_gain,
+        clf_gamma,
     )
     cbfs = compute_cbf_values(
-        point_x,
-        point_y,
+        p_x,
+        p_y,
         u_x,
         u_y,
         obstacles,
-        cbf_gain,
+        cbf_gamma,
     )
-    dynamic_gain = cbf_gain if dynamic_cbf_gain is None else dynamic_cbf_gain
+    dynamic_gamma = cbf_gamma if dynamic_cbf_gamma is None else dynamic_cbf_gamma
     dynamic_cbfs = compute_dynamic_cbf_values(
-        point_x,
-        point_y,
+        p_x,
+        p_y,
         u_x,
         u_y,
         dynamic_obstacles,
-        dynamic_gain,
+        dynamic_gamma,
     )
     return QpResult(
         success=True,
@@ -311,89 +243,16 @@ def _build_qp_result(
         u_x=u_x,
         u_y=u_y,
         delta=delta,
-        objective=_objective((u_x, u_y, delta), u_nom_x, u_nom_y, slack_weight),
+        objective=_objective((u_x, u_y, delta), u_nom_x, u_nom_y, w_delta),
         clf=clf,
         cbfs=cbfs,
         dynamic_cbfs=dynamic_cbfs,
     )
 
 
-def _solve_qp_with_qpsolvers(
-    h_diag: Tuple[float, float, float],
-    linear: Tuple[float, float, float],
-    constraints_a: Sequence[Tuple[float, float, float]],
-    constraints_b: Sequence[float],
-    solver: str,
-    verbose: bool,
-) -> QpResult:
-    del verbose
-    try:
-        import numpy as np
-        from qpsolvers import solve_qp
-    except ImportError as exception:
-        return QpResult(
-            success=False,
-            status=f"qpsolvers unavailable: {exception}",
-        )
-
-    p_matrix = np.diag(np.array(h_diag, dtype=float))
-    q_vector = np.array(linear, dtype=float)
-    g_matrix = np.array(constraints_a, dtype=float)
-    h_vector = np.array(constraints_b, dtype=float)
-    try:
-        solution = solve_qp(
-            p_matrix,
-            q_vector,
-            G=g_matrix,
-            h=h_vector,
-            solver=solver,
-        )
-    except Exception as exception:
-        return QpResult(
-            success=False,
-            status=f"qpsolvers {solver} exception: {exception}",
-        )
-
-    if solution is None:
-        return QpResult(success=False, status=f"qpsolvers {solver}: no solution")
-
-    values = tuple(float(value) for value in solution[:3])
-    if not _all_finite(values):
-        return QpResult(success=False, status="non-finite solution")
-    return QpResult(
-        success=True,
-        status=f"qpsolvers_{solver}",
-        u_x=values[0],
-        u_y=values[1],
-        delta=values[2],
-        objective=_quadratic_objective(values, h_diag, linear),
-    )
-
-
-def _all_finite(values: Sequence[float]) -> bool:
+def _all_finite(values):
     return all(math.isfinite(value) for value in values)
 
 
-def _objective(
-    z: Tuple[float, float, float],
-    u_nom_x: float,
-    u_nom_y: float,
-    slack_weight: float,
-) -> float:
-    return (
-        (z[0] - u_nom_x) * (z[0] - u_nom_x)
-        + (z[1] - u_nom_y) * (z[1] - u_nom_y)
-        + slack_weight * z[2] * z[2]
-    )
-
-
-def _quadratic_objective(
-    z: Tuple[float, float, float],
-    h_diag: Tuple[float, float, float],
-    linear: Tuple[float, float, float],
-) -> float:
-    return 0.5 * (
-        h_diag[0] * z[0] * z[0]
-        + h_diag[1] * z[1] * z[1]
-        + h_diag[2] * z[2] * z[2]
-    ) + linear[0] * z[0] + linear[1] * z[1] + linear[2] * z[2]
+def _objective(z, u_nom_x, u_nom_y, w_delta):
+    return (z[0] - u_nom_x) ** 2 + (z[1] - u_nom_y) ** 2 + w_delta * z[2] ** 2

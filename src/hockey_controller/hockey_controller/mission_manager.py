@@ -35,9 +35,9 @@ except ImportError:
 from hockey_controller.cushion_parking_planner import CushionGeometry
 from hockey_controller.cushion_parking_planner import ParkingPlannerConfig
 from hockey_controller.cushion_parking_planner import plan_parking_route
-from hockey_controller.navigation_server import clamp
-from hockey_controller.navigation_server import wrap_to_pi
-from hockey_controller.navigation_server import yaw_from_quaternion
+from hockey_controller.control_utils import clamp
+from hockey_controller.control_utils import wrap_to_pi
+from hockey_controller.control_utils import yaw_from_quaternion
 from hockey_controller.parking_markers import marker_array_type
 from hockey_controller.parking_markers import publish_parking_markers
 from hockey_controller.parking_markers import visualization_available
@@ -47,7 +47,6 @@ class MissionManager(Node):
     """Small state-machine wrapper for cushion parking."""
 
     DEFAULTS = {
-        "navigation_action": "navigate_to_point",
         "safe_navigation_action": "safe_navigate_to_point",
         "spin_action": "spin",
         "shooting_action": "shoot_puck",
@@ -56,6 +55,7 @@ class MissionManager(Node):
         "robot_id": 1,
         "pose_topic": "",
         "cushion_pose_topic": "",
+        "goal_pose_topic": "/vrpn_mocap/goal/pose",
         "parking_enabled": True,
         "target_x": 1.0,
         "target_y": 0.0,
@@ -76,7 +76,6 @@ class MissionManager(Node):
         "cushion_obstacle_radius_override": -1.0,
         "parking_lookahead_distance": 0.25,
         "final_approach_speed": 0.12,
-        "final_approach_point_gain": 0.35,
         "align_gain": 2.0,
         "align_timeout_sec": 150.0,
         "final_yaw_tolerance": 0.08,
@@ -85,7 +84,6 @@ class MissionManager(Node):
         "rotations": 1,
         "linear_speed": 0.4,
         "angular_speed": 0.8,
-        "navigation_timeout_sec": 150.0,
         "safe_navigation_timeout_sec": 150.0,
         "spin_timeout_sec": 150.0,
         "action_wait_timeout_sec": 150.0,
@@ -139,6 +137,8 @@ class MissionManager(Node):
         self._latest_pose_time = None
         self._latest_cushion_pose = None
         self._latest_cushion_pose_time = None
+        self._latest_goal_pose = None
+        self._latest_goal_pose_time = None
         self._running = False
         self._stop_requested = False
         self._active_goal = None
@@ -174,6 +174,13 @@ class MissionManager(Node):
             qos_profile_sensor_data,
             callback_group=self._group,
         )
+        self.goal_sub = self.create_subscription(
+            PoseStamped,
+            self.goal_pose_topic,
+            self._goal_pose_callback,
+            qos_profile_sensor_data,
+            callback_group=self._group,
+        )
         self.create_service(
             Trigger,
             "mission/start",
@@ -188,12 +195,6 @@ class MissionManager(Node):
         )
         self.add_on_set_parameters_callback(self._set_parameters_callback)
 
-        self.nav_client = ActionClient(
-            self,
-            NavigateToPoint,
-            self.navigation_action,
-            callback_group=self._group,
-        )
         self.safe_nav_client = ActionClient(
             self,
             NavigateToPoint,
@@ -406,7 +407,6 @@ class MissionManager(Node):
         self._align_to_yaw(plan.final_yaw)
 
         self._status("FINAL_APPROACH")
-        self._set_safe_nav_parameters({"point_gain": self.final_approach_point_gain})
         final_goal = self._control_point_goal(plan.final_park_point, plan.final_yaw)
         self._safe_navigate(final_goal, self.final_approach_speed)
         self._align_to_yaw(plan.final_yaw)
@@ -420,16 +420,19 @@ class MissionManager(Node):
             if self.shooting_role == "passer":
                 self.get_logger().info("Shooting to pass location because role=passer")
                 self._shoot_puck()
+                self._retreat_to_cushion_side(plan)
                 self._publish_team_status("PASS_DONE")
 
             elif self.shooting_role == "shooter":
                 self.get_logger().info("Waiting to shoot because role=shooter")
+                self._go_to_shooter_wait_pose()
                 self._wait_for_team_pass()
                 self._shoot_puck()
 
             elif self.shooting_role == "single":
                 self.get_logger().info("Shooting puck because role=single")
                 self._shoot_puck()
+                self._retreat_to_cushion_side(plan)
             else:
                 raise RuntimeError(
                     f"unsupported shooting_role {self.shooting_role!r}; "
@@ -439,7 +442,7 @@ class MissionManager(Node):
 
     def _run_simple_mission(self) -> None:
         self._status("NAVIGATE")
-        self._navigate((self.target_x, self.target_y), self.linear_speed)
+        self._safe_navigate((self.target_x, self.target_y), self.linear_speed)
         self._status("SPIN")
         self._spin()
         self._status("MISSION_DONE")
@@ -464,7 +467,6 @@ class MissionManager(Node):
             {
                 "use_target_pose": False,
                 "orient_to_target": False,
-                "obstacles_enabled": True,
                 "robot_safety_radius": 0.0,
                 "obstacle_safe_margin": 0.0,
                 "obstacle_x": [obstacle.x for obstacle in plan.cushion_obstacles],
@@ -474,15 +476,6 @@ class MissionManager(Node):
                 ],
             }
         )
-
-    def _navigate(self, point, speed: float) -> None:
-        goal = NavigateToPoint.Goal()
-        goal.target_x = float(point[0])
-        goal.target_y = float(point[1])
-        goal.linear_speed = float(speed)
-        goal.angular_speed = self.angular_speed
-        goal.timeout_sec = self.navigation_timeout_sec
-        self._send_goal(self.nav_client, goal, self._navigation_feedback)
 
     def _safe_navigate(self, point, speed: float) -> None:
         goal = NavigateToPoint.Goal()
@@ -519,6 +512,37 @@ class MissionManager(Node):
         goal.timeout_sec = self.shooting_timeout_sec
         goal.max_attempts = self.shooting_max_attempts
         self._send_goal(self.shooting_client, goal, self._shooting_feedback)
+
+    def _retreat_to_cushion_side(self, plan) -> None:
+        self._status("RETREAT_TO_CUSHION_SIDE")
+        self._safe_navigate(plan.pre_park_point, self.linear_speed)
+        self._align_to_yaw(plan.final_yaw)
+
+    def _go_to_shooter_wait_pose(self) -> None:
+        goal_pose = self._fresh_goal_pose()
+        if goal_pose is None:
+            raise RuntimeError("stale goal pose before shooter wait")
+        wait_point = self._shooter_wait_point(goal_pose)
+        self._status("GO_TO_SHOOTER_WAIT_POSE")
+        self._safe_navigate(wait_point, self.linear_speed)
+
+    def _shooter_wait_point(
+        self,
+        goal_pose: Tuple[float, float, float],
+    ) -> Tuple[float, float]:
+        cos_goal = math.cos(goal_pose[2])
+        sin_goal = math.sin(goal_pose[2])
+        target_x = (
+            goal_pose[0]
+            + self.shooting_offset_x * cos_goal
+            - self.shooting_offset_y * sin_goal
+        )
+        target_y = (
+            goal_pose[1]
+            + self.shooting_offset_x * sin_goal
+            + self.shooting_offset_y * cos_goal
+        )
+        return target_x, target_y
 
     def _publish_team_status(self, status: str) -> None:
         self.team_publisher.publish(String(data=status))
@@ -729,6 +753,14 @@ class MissionManager(Node):
         ).nanoseconds / 1e9
         return self._latest_cushion_pose if age <= self.pose_timeout_sec else None
 
+    def _fresh_goal_pose(self):
+        if self._latest_goal_pose is None or self._latest_goal_pose_time is None:
+            return None
+        age = (
+            self.get_clock().now() - self._latest_goal_pose_time
+        ).nanoseconds / 1e9
+        return self._latest_goal_pose if age <= self.pose_timeout_sec else None
+
     def _pose_callback(self, message: PoseStamped) -> None:
         pose = message.pose
         self._latest_pose = (
@@ -746,6 +778,15 @@ class MissionManager(Node):
             yaw_from_quaternion(pose.orientation),
         )
         self._latest_cushion_pose_time = self.get_clock().now()
+
+    def _goal_pose_callback(self, message: PoseStamped) -> None:
+        pose = message.pose
+        self._latest_goal_pose = (
+            float(pose.position.x),
+            float(pose.position.y),
+            yaw_from_quaternion(pose.orientation),
+        )
+        self._latest_goal_pose_time = self.get_clock().now()
 
     def _navigation_feedback(self, feedback_message) -> None:
         feedback = feedback_message.feedback

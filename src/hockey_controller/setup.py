@@ -43,10 +43,6 @@ setup(
                 "hockey_controller.go_to_point_and_spin_server:main"
             ),
             (
-                "navigation_server = "
-                "hockey_controller.navigation_server:main"
-            ),
-            (
                 "safe_navigation_server = "
                 "hockey_controller.safe_navigation_server:main"
             ),
