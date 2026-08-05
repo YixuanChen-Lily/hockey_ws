@@ -331,7 +331,7 @@ class ShootingServer(Node):
                 )
                 self._set_puck_obstacle(puck_pose)
                 self._safe_navigate(
-                    robot_point,
+                    self._control_point_goal(robot_point, align_yaw),
                     request.linear_speed,
                     request.angular_speed,
                     request.timeout_sec,
@@ -558,6 +558,16 @@ class ShootingServer(Node):
             parameter.value.type = ParameterType.PARAMETER_DOUBLE_ARRAY
             parameter.value.double_array_value = [float(item) for item in value]
         return parameter
+
+    def _control_point_goal(
+        self,
+        position: Tuple[float, float],
+        yaw: float,
+    ) -> Tuple[float, float]:
+        return (
+            position[0] + self.safe_lookahead_distance * math.cos(yaw),
+            position[1] + self.safe_lookahead_distance * math.sin(yaw),
+        )
 
     def _wait_for_puck_target(
         self,
