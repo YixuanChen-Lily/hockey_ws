@@ -62,14 +62,6 @@ setup(
                 "parking_plotter = "
                 "hockey_controller.parking_plotter:main"
             ),
-            (
-                "move_arm_server = "
-                "hockey_controller.move_arm_server:main"
-            ),
-            (
-                "gripper_control_server = "
-                "hockey_controller.gripper_control_server:main"
-            ),
         ],
     },
 )

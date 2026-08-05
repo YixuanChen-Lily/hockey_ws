@@ -6,6 +6,7 @@ from time import monotonic
 from typing import Optional, Tuple
 
 import rclpy
+from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Twist
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.msg import SetParametersResult
@@ -25,12 +26,8 @@ from rclpy.qos import DurabilityPolicy
 from hockey_interfaces.action import NavigateToPoint
 from hockey_interfaces.action import ShootPuck
 from hockey_interfaces.action import Spin
-try:
-    from hockey_interfaces.action import GripperControl
-    from hockey_interfaces.action import MoveArm
-except ImportError:
-    GripperControl = None
-    MoveArm = None
+from robomaster_msgs.action import GripperControl
+from robomaster_msgs.action import MoveArm
 
 from hockey_controller.cushion_parking_planner import CushionGeometry
 from hockey_controller.cushion_parking_planner import ParkingPlannerConfig
@@ -50,8 +47,6 @@ class MissionManager(Node):
         "safe_navigation_action": "safe_navigate_to_point",
         "spin_action": "spin",
         "shooting_action": "shoot_puck",
-        "arm_action": "control_arm",
-        "gripper_action": "control_gripper",
         "robot_id": 1,
         "pose_topic": "",
         "cushion_pose_topic": "",
@@ -106,6 +101,9 @@ class MissionManager(Node):
         "shooting_timeout_sec": 150.0,
         "shooting_max_attempts": 20,
         "use_manipulator": True,
+        "reset_arm_x": 0.0,
+        "reset_arm_z": 0.0,
+        "reset_arm_settle_sec": 0.5,
         "grab_arm_x": 0.3,
         "grab_arm_z": 0.3,
         "grab_arm_relative": False,
@@ -149,6 +147,8 @@ class MissionManager(Node):
         self.pose_topic = self.pose_topic or f"/vrpn_mocap/dji_robot_{self.robot_id}/pose"
         self.cushion_pose_topic = self.cushion_pose_topic or "/vrpn_mocap/hockey_sticks_1/pose"
         self.cmd_vel_topic = f"/robot{self.robot_id}/cmd_vel"
+        self.arm_action = f"/robot{self.robot_id}/move_arm"
+        self.gripper_action = f"/robot{self.robot_id}/gripper"
 
         self.status_pub = self.create_publisher(String, "mission/status", 10)
         self.cmd_vel_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
@@ -213,20 +213,17 @@ class MissionManager(Node):
             self.shooting_action,
             callback_group=self._group,
         )
-        self.arm_client = (
-            ActionClient(self, MoveArm, self.arm_action, callback_group=self._group)
-            if MoveArm is not None
-            else None
+        self.arm_client = ActionClient(
+            self,
+            MoveArm,
+            self.arm_action,
+            callback_group=self._group,
         )
-        self.gripper_client = (
-            ActionClient(
-                self,
-                GripperControl,
-                self.gripper_action,
-                callback_group=self._group,
-            )
-            if GripperControl is not None
-            else None
+        self.gripper_client = ActionClient(
+            self,
+            GripperControl,
+            self.gripper_action,
+            callback_group=self._group,
         )
         self.safe_param_client = self.create_client(
             SetParameters,
@@ -332,6 +329,9 @@ class MissionManager(Node):
 
     def _run_mission(self) -> None:
         try:
+            if self.use_manipulator:
+                self._reset_arm()
+                self._reset_gripper()
             if self.parking_enabled:
                 self._run_parking_mission()
             else:
@@ -581,9 +581,20 @@ class MissionManager(Node):
             goal_handle.get_result_async().add_done_callback(goal_result)
 
         def goal_result(future):
-            result = future.result().result
-            outcome["success"] = bool(result.success)
-            outcome["message"] = str(result.message)
+            wrapped_result = future.result()
+            result = wrapped_result.result
+            if hasattr(result, "success"):
+                outcome["success"] = bool(result.success)
+                outcome["message"] = str(result.message)
+            else:
+                outcome["success"] = (
+                    wrapped_result.status == GoalStatus.STATUS_SUCCEEDED
+                )
+                outcome["message"] = (
+                    "Action succeeded"
+                    if outcome["success"]
+                    else f"Action failed with status {wrapped_result.status}"
+                )
             self._active_goal = None
             done.set()
 
@@ -623,9 +634,6 @@ class MissionManager(Node):
 
     def _pick_up_stick(self) -> None:
         self._status("PICK_UP_STICK")
-        if MoveArm is None or GripperControl is None:
-            raise RuntimeError("MoveArm or GripperControl action is not available")
-
         self._open_gripper()
         self._move_arm(
             self.grab_arm_x,
@@ -635,6 +643,27 @@ class MissionManager(Node):
         )
         self._close_gripper()
         self._back_up()
+
+    def _reset_arm(self) -> None:
+        """Move the arm to its configured absolute home pose."""
+        self._status("RESET_ARM")
+        self.get_logger().info(
+            "Resetting arm to absolute pose: "
+            f"x={float(self.reset_arm_x):.3f}m, "
+            f"z={float(self.reset_arm_z):.3f}m."
+        )
+        self._move_arm(
+            self.reset_arm_x,
+            self.reset_arm_z,
+            False,
+            self.reset_arm_settle_sec,
+        )
+
+    def _reset_gripper(self) -> None:
+        """Reset the gripper to its open state."""
+        self._status("RESET_GRIPPER")
+        self.get_logger().info("Resetting gripper to the open state.")
+        self._open_gripper()
 
     def _move_arm(
         self,
@@ -660,13 +689,6 @@ class MissionManager(Node):
     def _close_gripper(self) -> None:
         goal = GripperControl.Goal()
         goal.target_state = GripperControl.Goal.CLOSE
-        goal.power = self.gripper_close_power
-        self._send_goal(self.gripper_client, goal, self._gripper_feedback)
-        Event().wait(self.gripper_close_settle_sec)
-
-    def _open_gripper(self) -> None:
-        goal = GripperControl.Goal()
-        goal.target_state = GripperControl.Goal.OPEN
         goal.power = self.gripper_close_power
         self._send_goal(self.gripper_client, goal, self._gripper_feedback)
         Event().wait(self.gripper_close_settle_sec)
