@@ -242,7 +242,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("lift_arm_z", default_value="1.0"),
             DeclareLaunchArgument("lift_arm_relative", default_value="false"),
             DeclareLaunchArgument("lift_arm_settle_sec", default_value="0.5"),
-            DeclareLaunchArgument("backward_distance", default_value="0.30"),
+            DeclareLaunchArgument("backward_distance", default_value="0.60"),
             DeclareLaunchArgument(
                 "backward_duration_sec",
                 default_value="2.0",
