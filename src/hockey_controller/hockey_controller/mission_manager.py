@@ -40,8 +40,6 @@ from hockey_controller.parking_markers import visualization_available
 
 
 class MissionManager(Node):
-    """Small state-machine wrapper for cushion parking."""
-
     DEFAULTS = {
         "safe_navigation_action": "safe_navigate_to_point",
         "spin_action": "spin",
@@ -82,7 +80,7 @@ class MissionManager(Node):
         "spin_timeout_sec": 150.0,
         "action_wait_timeout_sec": 150.0,
         "shooting_enabled": False,
-        "shooting_role": "single",  # shooter, passer, or single
+        "shooting_role": "single",
         "team_name": "team_rocket",
         "teammate_robot_id": 0,
         "team_wait_timeout_sec": 150.0,
@@ -649,7 +647,6 @@ class MissionManager(Node):
         self._back_up()
 
     def _reset_arm(self) -> None:
-        """Move the arm to its configured absolute home pose."""
         self._status("RESET_ARM")
         self.get_logger().info(
             "Resetting arm to absolute pose: "
@@ -664,7 +661,6 @@ class MissionManager(Node):
         )
 
     def _reset_gripper(self) -> None:
-        """Reset the gripper to its open state."""
         self._status("RESET_GRIPPER")
         self.get_logger().info("Resetting gripper to the open state.")
         self._open_gripper()

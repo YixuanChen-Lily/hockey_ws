@@ -63,7 +63,6 @@ def cushion_axes(
 
 
 def cushion_lateral_axis(geometry: CushionGeometry) -> Tuple[float, float]:
-    """Return the positive local axis perpendicular to the selected front axis."""
     t = (math.cos(geometry.yaw), math.sin(geometry.yaw))
     local_y = (-math.sin(geometry.yaw), math.cos(geometry.yaw))
     if geometry.front_axis == "x":
@@ -90,11 +89,6 @@ def parking_points(
 ) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
     t, n = cushion_axes(geometry)
     lateral = cushion_lateral_axis(geometry)
-    # Positive front normal n points toward the desired parking side.
-    # Therefore both final and pre-park points are placed at +n from the
-    # cushion center; pre-park is farther out along +n for a straight approach.
-    # parking_lateral_offset moves the parking slot along the cushion local
-    # axis perpendicular to the selected parking front axis.
     final_x = (
         geometry.center_x
         + config.desired_normal_distance * n[0]

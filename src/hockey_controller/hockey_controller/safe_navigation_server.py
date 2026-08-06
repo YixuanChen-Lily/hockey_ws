@@ -55,8 +55,6 @@ class PoseObstacleSpec:
 
 
 class SafeNavigationServer(Node):
-    """Action server using approximate linearization for a unicycle robot."""
-
     CONTROL_RATE_HZ = 20.0
     POSITION_TOLERANCE = 0.01
     HEADING_TOLERANCE = 0.08

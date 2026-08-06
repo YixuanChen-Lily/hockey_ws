@@ -35,8 +35,6 @@ class ShootingState(Enum):
 
 
 class ShootingServer(Node):
-    """Action server that repeatedly hits the puck toward a target area."""
-
     def __init__(self) -> None:
         super().__init__("shooting_server")
 

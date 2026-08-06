@@ -38,8 +38,6 @@ def yaw_from_quaternion(quaternion) -> float:
 
 
 class SpinServer(Node):
-    """Action server that spins one robot in place."""
-
     def __init__(self) -> None:
         super().__init__("spin_server")
 

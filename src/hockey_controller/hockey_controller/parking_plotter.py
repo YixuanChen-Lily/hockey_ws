@@ -40,8 +40,6 @@ class PosePlotState:
 
 
 class ParkingPlotter(Node):
-    """Standalone matplotlib view for parking radii, route, and trajectory."""
-
     def __init__(self) -> None:
         super().__init__("parking_plotter")
 

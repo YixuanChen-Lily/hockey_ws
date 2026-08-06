@@ -119,7 +119,6 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         [
-            # Identity / namespacing.
             DeclareLaunchArgument("namespace", default_value=""),
             DeclareLaunchArgument("robot_id", default_value="1"),
             DeclareLaunchArgument(
@@ -137,13 +136,11 @@ def generate_launch_description() -> LaunchDescription:
 
             DeclareLaunchArgument("safe_lookahead_distance", default_value="0.25"),
 
-            # Pose-updated obstacles. Leave lists empty to disable.
             DeclareLaunchArgument("safe_obstacle_robot_ids", default_value="[]"),
             DeclareLaunchArgument("safe_obstacle_pose_topics", default_value="[]"),
             DeclareLaunchArgument("safe_obstacle_pose_radii", default_value="[]"),
             DeclareLaunchArgument("safe_obstacle_safety_margin", default_value="0.0"),
 
-            # Parking geometry and route planning.
             DeclareLaunchArgument("parking_enabled", default_value="true"),
             DeclareLaunchArgument("cushion_length", default_value="1.0"),
             DeclareLaunchArgument("cushion_width", default_value="0.12"),
@@ -163,7 +160,6 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("parking_lookahead_distance", default_value="0.25"),
             DeclareLaunchArgument("final_approach_speed", default_value="0.12"),
 
-            # Mission-level speed and timeout knobs.
             DeclareLaunchArgument("linear_speed", default_value="0.4"),
             DeclareLaunchArgument("angular_speed", default_value="0.8"),
             DeclareLaunchArgument("pose_timeout_sec", default_value="150.0"),
@@ -186,7 +182,6 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("align_timeout_sec", default_value="150.0"),
             DeclareLaunchArgument("final_yaw_tolerance", default_value="0.08"),
 
-            # Optional shooting phase after parking/pickup.
             DeclareLaunchArgument("shooting_enabled", default_value="false"),
             DeclareLaunchArgument("shooting_role", default_value="single"),
             DeclareLaunchArgument("team_name", default_value="team_rocket"),
@@ -224,9 +219,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument("shooting_max_attempts", default_value="20"),
 
-            # Stick pickup is part of this mission.
             DeclareLaunchArgument("use_manipulator", default_value="true"),
-            # Reset the arm to this absolute pose before every mission.
             DeclareLaunchArgument("reset_arm_x", default_value="0.0"),
             DeclareLaunchArgument("reset_arm_z", default_value="0.0"),
             DeclareLaunchArgument("reset_arm_settle_sec", default_value="0.5"),
@@ -234,7 +227,6 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("grab_arm_z", default_value="0.3"),
             DeclareLaunchArgument("grab_arm_relative", default_value="false"),
             DeclareLaunchArgument("grab_arm_settle_sec", default_value="0.5"),
-            # Step 2: open then close the gripper (power must remain in [0, 1]).
             DeclareLaunchArgument(
                 "gripper_open_power",
                 default_value="0.5",
@@ -251,7 +243,6 @@ def generate_launch_description() -> LaunchDescription:
                 "gripper_close_settle_sec",
                 default_value="0.5",
             ),
-            # Step 3: lift the arm while retaining the closed gripper.
             DeclareLaunchArgument("lift_arm_x", default_value="0.0"),
             DeclareLaunchArgument("lift_arm_z", default_value="1.0"),
             DeclareLaunchArgument("lift_arm_relative", default_value="false"),
@@ -265,7 +256,6 @@ def generate_launch_description() -> LaunchDescription:
                 "backward_publish_rate_hz",
                 default_value="20.0",
             ),
-            # Step 5: lower the arm into the ready-to-hit pose.
             DeclareLaunchArgument("ready_arm_x", default_value="0.1"),
             DeclareLaunchArgument("ready_arm_z", default_value="0.0"),
             DeclareLaunchArgument("ready_arm_relative", default_value="false"),
