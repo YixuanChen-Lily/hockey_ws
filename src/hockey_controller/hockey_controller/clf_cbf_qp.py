@@ -14,15 +14,6 @@ class CircularObstacle:
 
 
 @dataclass(frozen=True)
-class DynamicCircularObstacle:
-    x: float
-    y: float
-    velocity_x: float
-    velocity_y: float
-    radius: float
-
-
-@dataclass(frozen=True)
 class ClfValues:
     v: float
     residual: float
@@ -44,7 +35,6 @@ class QpResult:
     objective: float = math.inf
     clf: Optional[ClfValues] = None
     cbfs: Tuple[CbfValue, ...] = ()
-    dynamic_cbfs: Tuple[CbfValue, ...] = ()
 
 
 def obstacle_arrays_valid(obstacle_x, obstacle_y, obstacle_radius):
@@ -81,21 +71,6 @@ def compute_cbf_values(p_x, p_y, u_x, u_y, obstacles, cbf_gamma):
     return tuple(values)
 
 
-def compute_dynamic_cbf_values(p_x, p_y, u_x, u_y, obstacles, cbf_gamma):
-    values = []
-    for obstacle in obstacles:
-        dx = p_x - obstacle.x
-        dy = p_y - obstacle.y
-        h = dx**2 + dy**2 - obstacle.radius**2
-        residual = (
-            2.0 * dx * (u_x - obstacle.velocity_x)
-            + 2.0 * dy * (u_y - obstacle.velocity_y)
-            + cbf_gamma * h
-        )
-        values.append(CbfValue(h=h, residual=residual))
-    return tuple(values)
-
-
 def solve_clf_cbf_qp(
     p_x,
     p_y,
@@ -109,10 +84,7 @@ def solve_clf_cbf_qp(
     w_delta,
     max_point_speed,
     qp_solver="cvxopt",
-    dynamic_obstacles=(),
-    dynamic_cbf_gamma=None,
 ):
-    dynamic_gamma = cbf_gamma if dynamic_cbf_gamma is None else dynamic_cbf_gamma
     e_x = p_x - g_x
     e_y = p_y - g_y
     value = 0.5 * (e_x**2 + e_y**2)
@@ -126,17 +98,6 @@ def solve_clf_cbf_qp(
         h = dx**2 + dy**2 - obstacle.radius**2
         constraints_a.append((-2.0 * dx, -2.0 * dy, 0.0))
         constraints_b.append(cbf_gamma * h)
-
-    for obstacle in dynamic_obstacles:
-        dx = p_x - obstacle.x
-        dy = p_y - obstacle.y
-        h = dx**2 + dy**2 - obstacle.radius**2
-        constraints_a.append((-2.0 * dx, -2.0 * dy, 0.0))
-        constraints_b.append(
-            dynamic_gamma * h
-            - 2.0 * dx * obstacle.velocity_x
-            - 2.0 * dy * obstacle.velocity_y
-        )
 
     constraints_a.extend(
         [
@@ -187,8 +148,6 @@ def solve_clf_cbf_qp(
         cbf_gamma,
         w_delta,
         f"qpsolvers_{qp_solver}",
-        dynamic_obstacles,
-        dynamic_gamma,
     )
 
 
@@ -207,8 +166,6 @@ def _build_qp_result(
     cbf_gamma,
     w_delta,
     status,
-    dynamic_obstacles=(),
-    dynamic_cbf_gamma=None,
 ):
     clf = compute_clf_values(
         p_x,
@@ -228,15 +185,6 @@ def _build_qp_result(
         obstacles,
         cbf_gamma,
     )
-    dynamic_gamma = cbf_gamma if dynamic_cbf_gamma is None else dynamic_cbf_gamma
-    dynamic_cbfs = compute_dynamic_cbf_values(
-        p_x,
-        p_y,
-        u_x,
-        u_y,
-        dynamic_obstacles,
-        dynamic_gamma,
-    )
     return QpResult(
         success=True,
         status=status,
@@ -246,7 +194,6 @@ def _build_qp_result(
         objective=_objective((u_x, u_y, delta), u_nom_x, u_nom_y, w_delta),
         clf=clf,
         cbfs=cbfs,
-        dynamic_cbfs=dynamic_cbfs,
     )
 
 

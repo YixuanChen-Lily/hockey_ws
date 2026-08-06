@@ -18,7 +18,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 
 @dataclass
-class DynamicRobotPlotState:
+class ObstacleRobotPlotState:
     x: float
     y: float
     timestamp_sec: float
@@ -63,16 +63,16 @@ class ParkingPlotter(Node):
         self.declare_parameter("shooting_puck_obstacle_radius", 0.10)
         self.declare_parameter("safe_lookahead_distance", 0.25)
         self.declare_parameter("pose_timeout_sec", 150.0)
-        dynamic_ids_descriptor = ParameterDescriptor(dynamic_typing=True)
-        self.declare_parameter("dynamic_robot_ids", [], dynamic_ids_descriptor)
+        obstacle_ids_descriptor = ParameterDescriptor(dynamic_typing=True)
+        self.declare_parameter("obstacle_robot_ids", [], obstacle_ids_descriptor)
         self.declare_parameter(
-            "dynamic_pose_topic_template",
+            "obstacle_pose_topic_template",
             "/vrpn_mocap/dji_robot_{robot_id}/pose",
         )
-        self.declare_parameter("dynamic_controlled_robot_radius", 0.0)
-        self.declare_parameter("dynamic_robot_radius", 0.18)
-        self.declare_parameter("dynamic_robot_safety_margin", 0.0)
-        self.declare_parameter("dynamic_obstacle_timeout_sec", 150.0)
+        self.declare_parameter("obstacle_controlled_robot_radius", 0.0)
+        self.declare_parameter("obstacle_robot_radius", 0.18)
+        self.declare_parameter("obstacle_robot_safety_margin", 0.0)
+        self.declare_parameter("obstacle_pose_timeout_sec", 150.0)
 
         robot_id = int(self.get_parameter("robot_id").value)
         pose_topic = str(self.get_parameter("pose_topic").value)
@@ -119,19 +119,19 @@ class ParkingPlotter(Node):
             self.get_parameter("safe_lookahead_distance").value
         )
         self.pose_timeout_sec = float(self.get_parameter("pose_timeout_sec").value)
-        self.dynamic_robot_ids = self._coerce_int_array(
-            self.get_parameter("dynamic_robot_ids").value
+        self.obstacle_robot_ids = self._coerce_int_array(
+            self.get_parameter("obstacle_robot_ids").value
         )
-        self.dynamic_pose_topic_template = str(
-            self.get_parameter("dynamic_pose_topic_template").value
+        self.obstacle_pose_topic_template = str(
+            self.get_parameter("obstacle_pose_topic_template").value
         )
-        self.dynamic_obstacle_radius = (
-            float(self.get_parameter("dynamic_controlled_robot_radius").value)
-            + float(self.get_parameter("dynamic_robot_radius").value)
-            + float(self.get_parameter("dynamic_robot_safety_margin").value)
+        self.obstacle_pose_radius = (
+            float(self.get_parameter("obstacle_controlled_robot_radius").value)
+            + float(self.get_parameter("obstacle_robot_radius").value)
+            + float(self.get_parameter("obstacle_robot_safety_margin").value)
         )
-        self.dynamic_obstacle_timeout_sec = float(
-            self.get_parameter("dynamic_obstacle_timeout_sec").value
+        self.obstacle_pose_timeout_sec = float(
+            self.get_parameter("obstacle_pose_timeout_sec").value
         )
         self.plot_period_sec = 1.0 / max(
             float(self.get_parameter("plot_rate_hz").value),
@@ -142,8 +142,8 @@ class ParkingPlotter(Node):
         self._markers: List[Marker] = []
         self._puck_pose: Optional[PosePlotState] = None
         self._goal_pose: Optional[PosePlotState] = None
-        self._dynamic_robot_states: Dict[int, DynamicRobotPlotState] = {}
-        self._dynamic_robot_subscriptions = []
+        self._obstacle_robot_states: Dict[int, ObstacleRobotPlotState] = {}
+        self._obstacle_robot_subscriptions = []
         self._dirty = True
         self._lock = Lock()
         self._callback_group = ReentrantCallbackGroup()
@@ -176,15 +176,15 @@ class ParkingPlotter(Node):
             qos_profile_sensor_data,
             callback_group=self._callback_group,
         )
-        for dynamic_robot_id in self.dynamic_robot_ids:
-            topic = self.dynamic_pose_topic_template.format(
-                robot_id=dynamic_robot_id
+        for obstacle_robot_id in self.obstacle_robot_ids:
+            topic = self.obstacle_pose_topic_template.format(
+                robot_id=obstacle_robot_id
             )
-            self._dynamic_robot_subscriptions.append(
+            self._obstacle_robot_subscriptions.append(
                 self.create_subscription(
                     PoseStamped,
                     topic,
-                    self._make_dynamic_pose_callback(dynamic_robot_id),
+                    self._make_obstacle_pose_callback(obstacle_robot_id),
                     qos_profile_sensor_data,
                     callback_group=self._callback_group,
                 )
@@ -205,8 +205,8 @@ class ParkingPlotter(Node):
             f"  marker = {self.marker_topic}\n"
             f"  puck   = {self.puck_pose_topic}\n"
             f"  goal   = {self.goal_pose_topic}\n"
-            f"  dynamic robots = {self.dynamic_robot_ids}\n"
-            f"  dynamic radius = {self.dynamic_obstacle_radius:.2f}\n"
+            f"  obstacle robots = {self.obstacle_robot_ids}\n"
+            f"  obstacle radius = {self.obstacle_pose_radius:.2f}\n"
             f"  gui    = {self.show_gui}\n"
             f"  output = {self.output_path}"
         )
@@ -274,19 +274,19 @@ class ParkingPlotter(Node):
                 self._markers.append(marker)
             self._dirty = True
 
-    def _make_dynamic_pose_callback(self, robot_id: int):
+    def _make_obstacle_pose_callback(self, robot_id: int):
         def callback(message: PoseStamped) -> None:
-            self._dynamic_pose_callback(robot_id, message)
+            self._obstacle_pose_callback(robot_id, message)
 
         return callback
 
-    def _dynamic_pose_callback(
+    def _obstacle_pose_callback(
         self,
         robot_id: int,
         message: PoseStamped,
     ) -> None:
         with self._lock:
-            self._dynamic_robot_states[robot_id] = DynamicRobotPlotState(
+            self._obstacle_robot_states[robot_id] = ObstacleRobotPlotState(
                 x=float(message.pose.position.x),
                 y=float(message.pose.position.y),
                 timestamp_sec=time.monotonic(),
@@ -317,7 +317,7 @@ class ParkingPlotter(Node):
                 return
             markers = list(self._markers)
             trajectory = list(self._trajectory)
-            dynamic_robot_states = dict(self._dynamic_robot_states)
+            obstacle_robot_states = dict(self._obstacle_robot_states)
             puck_pose = self._puck_pose
             goal_pose = self._goal_pose
             self._dirty = False
@@ -334,7 +334,7 @@ class ParkingPlotter(Node):
         plotted_points: List[Tuple[float, float]] = []
         for marker in markers:
             plotted_points.extend(self._draw_marker(marker))
-        plotted_points.extend(self._draw_dynamic_obstacles(dynamic_robot_states))
+        plotted_points.extend(self._draw_pose_obstacles(obstacle_robot_states))
         plotted_points.extend(self._draw_shooting_geometry(puck_pose, goal_pose))
 
         if trajectory:
@@ -382,31 +382,31 @@ class ParkingPlotter(Node):
             return [(start.x, start.y), (end.x, end.y)]
         return []
 
-    def _draw_dynamic_obstacles(
+    def _draw_pose_obstacles(
         self,
-        states: Dict[int, DynamicRobotPlotState],
+        states: Dict[int, ObstacleRobotPlotState],
     ) -> List[Tuple[float, float]]:
         plotted_points = []
         now_sec = time.monotonic()
-        for robot_id in self.dynamic_robot_ids:
-            state: Optional[DynamicRobotPlotState] = states.get(robot_id)
+        for robot_id in self.obstacle_robot_ids:
+            state: Optional[ObstacleRobotPlotState] = states.get(robot_id)
             if state is None:
                 continue
             age_sec = now_sec - state.timestamp_sec
-            is_stale = age_sec > self.dynamic_obstacle_timeout_sec
+            is_stale = age_sec > self.obstacle_pose_timeout_sec
             color = (1.0, 0.0, 0.0, 0.22) if not is_stale else (0.35, 0.35, 0.35, 0.16)
             edge_color = (1.0, 0.0, 0.0) if not is_stale else (0.35, 0.35, 0.35)
             circle = self._patches.Circle(
                 (state.x, state.y),
-                self.dynamic_obstacle_radius,
+                self.obstacle_pose_radius,
                 facecolor=color,
                 edgecolor=edge_color,
                 linewidth=1.4,
                 linestyle="-" if not is_stale else "--",
                 label=(
-                    f"dynamic_obstacle r={self.dynamic_obstacle_radius:.2f}"
+                    f"pose_obstacle r={self.obstacle_pose_radius:.2f}"
                     if not is_stale
-                    else f"stale_dynamic_obstacle r={self.dynamic_obstacle_radius:.2f}"
+                    else f"stale_pose_obstacle r={self.obstacle_pose_radius:.2f}"
                 ),
             )
             self._axis.add_patch(circle)
@@ -416,7 +416,7 @@ class ParkingPlotter(Node):
                 color=edge_color,
                 s=28,
                 marker="o",
-                label=f"dynamic_robot_{robot_id}",
+                label=f"obstacle_robot_{robot_id}",
             )
             self._axis.text(
                 state.x,
@@ -430,12 +430,12 @@ class ParkingPlotter(Node):
             plotted_points.extend(
                 [
                     (
-                        state.x - self.dynamic_obstacle_radius,
-                        state.y - self.dynamic_obstacle_radius,
+                        state.x - self.obstacle_pose_radius,
+                        state.y - self.obstacle_pose_radius,
                     ),
                     (
-                        state.x + self.dynamic_obstacle_radius,
-                        state.y + self.dynamic_obstacle_radius,
+                        state.x + self.obstacle_pose_radius,
+                        state.y + self.obstacle_pose_radius,
                     ),
                 ]
             )

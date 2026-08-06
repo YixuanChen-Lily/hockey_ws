@@ -14,8 +14,16 @@ def generate_launch_description() -> LaunchDescription:
     goal_pose_topic = LaunchConfiguration("goal_pose_topic")
 
     safe_lookahead_distance = LaunchConfiguration("safe_lookahead_distance")
-    safe_dynamic_robot_ids = ParameterValue(
-        LaunchConfiguration("safe_dynamic_robot_ids"),
+    safe_obstacle_robot_ids = ParameterValue(
+        LaunchConfiguration("safe_obstacle_robot_ids"),
+        value_type=str,
+    )
+    safe_obstacle_pose_topics = ParameterValue(
+        LaunchConfiguration("safe_obstacle_pose_topics"),
+        value_type=str,
+    )
+    safe_obstacle_pose_radii = ParameterValue(
+        LaunchConfiguration("safe_obstacle_pose_radii"),
         value_type=str,
     )
 
@@ -38,8 +46,8 @@ def generate_launch_description() -> LaunchDescription:
     linear_speed = LaunchConfiguration("linear_speed")
     angular_speed = LaunchConfiguration("angular_speed")
     pose_timeout_sec = LaunchConfiguration("pose_timeout_sec")
-    dynamic_obstacle_timeout_sec = LaunchConfiguration(
-        "dynamic_obstacle_timeout_sec"
+    obstacle_pose_timeout_sec = LaunchConfiguration(
+        "obstacle_pose_timeout_sec"
     )
     safe_navigation_timeout_sec = LaunchConfiguration(
         "safe_navigation_timeout_sec"
@@ -126,8 +134,10 @@ def generate_launch_description() -> LaunchDescription:
 
             DeclareLaunchArgument("safe_lookahead_distance", default_value="0.25"),
 
-            # Dynamic robot obstacles. Leave ids empty to disable.
-            DeclareLaunchArgument("safe_dynamic_robot_ids", default_value="[]"),
+            # Pose-updated obstacles. Leave lists empty to disable.
+            DeclareLaunchArgument("safe_obstacle_robot_ids", default_value="[]"),
+            DeclareLaunchArgument("safe_obstacle_pose_topics", default_value="[]"),
+            DeclareLaunchArgument("safe_obstacle_pose_radii", default_value="[]"),
 
             # Parking geometry and route planning.
             DeclareLaunchArgument("parking_enabled", default_value="true"),
@@ -154,7 +164,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("angular_speed", default_value="0.8"),
             DeclareLaunchArgument("pose_timeout_sec", default_value="150.0"),
             DeclareLaunchArgument(
-                "dynamic_obstacle_timeout_sec",
+                "obstacle_pose_timeout_sec",
                 default_value="150.0",
             ),
             DeclareLaunchArgument(
@@ -273,7 +283,10 @@ def generate_launch_description() -> LaunchDescription:
                     {
                         "robot_id": robot_id,
                         "action_name": "safe_navigate_to_point",
-                        "dynamic_robot_ids": safe_dynamic_robot_ids,
+                        "lookahead_distance": safe_lookahead_distance,
+                        "obstacle_robot_ids": safe_obstacle_robot_ids,
+                        "obstacle_pose_topics": safe_obstacle_pose_topics,
+                        "obstacle_pose_radii": safe_obstacle_pose_radii,
                         "target_pose_topic": target_pose_topic,
                     }
                 ],
@@ -426,8 +439,8 @@ def generate_launch_description() -> LaunchDescription:
                         "puck_pose_topic": puck_pose_topic,
                         "goal_pose_topic": goal_pose_topic,
                         "pose_timeout_sec": pose_timeout_sec,
-                        "dynamic_obstacle_timeout_sec": (
-                            dynamic_obstacle_timeout_sec
+                        "obstacle_pose_timeout_sec": (
+                            obstacle_pose_timeout_sec
                         ),
                         "shooting_role": shooting_role,
                         "shooting_offset_x": shooting_offset_x,
@@ -445,7 +458,7 @@ def generate_launch_description() -> LaunchDescription:
                             shooting_puck_obstacle_radius
                         ),
                         "safe_lookahead_distance": safe_lookahead_distance,
-                        "dynamic_robot_ids": safe_dynamic_robot_ids,
+                        "obstacle_robot_ids": safe_obstacle_robot_ids,
                     }
                 ],
             ),

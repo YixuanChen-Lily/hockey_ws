@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Tuple
 
 from hockey_controller.clf_cbf_qp import CircularObstacle
 
@@ -31,10 +31,6 @@ class ParkingPlannerConfig:
     circle_spacing: float = 0.20
     obstacle_axis: str = "local_x"
     obstacle_radius_override: float = -1.0
-    field_min_x: Optional[float] = None
-    field_max_x: Optional[float] = None
-    field_min_y: Optional[float] = None
-    field_max_y: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -86,22 +82,6 @@ def classify_front_side(
         + n[1] * (robot_position[1] - geometry.center_y)
     )
     return side_value >= front_side_threshold, side_value
-
-
-def cushion_endpoints(
-    geometry: CushionGeometry,
-) -> Tuple[Tuple[float, float], Tuple[float, float]]:
-    t, _ = cushion_axes(geometry)
-    half_length = 0.5 * geometry.length
-    left_endpoint = (
-        geometry.center_x - half_length * t[0],
-        geometry.center_y - half_length * t[1],
-    )
-    right_endpoint = (
-        geometry.center_x + half_length * t[0],
-        geometry.center_y + half_length * t[1],
-    )
-    return left_endpoint, right_endpoint
 
 
 def parking_points(
@@ -261,7 +241,6 @@ def plan_parking_route(
     robot_position: Tuple[float, float],
     geometry: CushionGeometry,
     config: ParkingPlannerConfig,
-    extra_obstacles: Sequence[CircularObstacle] = (),
 ) -> ParkingPlan:
     if geometry.length <= 0.0 or geometry.width <= 0.0:
         return ParkingPlan(
@@ -299,13 +278,8 @@ def plan_parking_route(
 
     left_route, right_route = bypass_waypoints(geometry, config)
     candidates = (("left", left_route), ("right", right_route))
-    safety_obstacles = tuple(cushion_obstacles) + tuple(extra_obstacles)
     valid_candidates = []
     for side, route in candidates:
-        if not all(_point_in_field(waypoint, config) for waypoint in route):
-            continue
-        if any(_inside_any_obstacle(waypoint, safety_obstacles) for waypoint in route):
-            continue
         cost = (
             _distance(robot_position, route[0])
             + _distance(route[0], route[1])
@@ -336,59 +310,6 @@ def plan_parking_route(
         cushion_obstacles,
         "bypass selected",
     )
-
-
-def direct_segment_crosses_cushion(
-    start: Tuple[float, float],
-    end: Tuple[float, float],
-    geometry: CushionGeometry,
-) -> bool:
-    t, n = cushion_axes(geometry)
-    sx = start[0] - geometry.center_x
-    sy = start[1] - geometry.center_y
-    ex = end[0] - geometry.center_x
-    ey = end[1] - geometry.center_y
-    s_t = sx * t[0] + sy * t[1]
-    s_n = sx * n[0] + sy * n[1]
-    e_t = ex * t[0] + ey * t[1]
-    e_n = ex * n[0] + ey * n[1]
-    if s_n == e_n:
-        return abs(s_n) <= 0.5 * geometry.width and (
-            min(s_t, e_t) <= 0.5 * geometry.length
-            and max(s_t, e_t) >= -0.5 * geometry.length
-        )
-    ratio = -s_n / (e_n - s_n)
-    if ratio < 0.0 or ratio > 1.0:
-        return False
-    crossing_t = s_t + ratio * (e_t - s_t)
-    return abs(crossing_t) <= 0.5 * geometry.length
-
-
-def _point_in_field(
-    point: Tuple[float, float],
-    config: ParkingPlannerConfig,
-) -> bool:
-    x, y = point
-    if config.field_min_x is not None and x < config.field_min_x:
-        return False
-    if config.field_max_x is not None and x > config.field_max_x:
-        return False
-    if config.field_min_y is not None and y < config.field_min_y:
-        return False
-    if config.field_max_y is not None and y > config.field_max_y:
-        return False
-    return True
-
-
-def _inside_any_obstacle(
-    point: Tuple[float, float],
-    obstacles: Sequence[CircularObstacle],
-) -> bool:
-    for obstacle in obstacles:
-        if _distance(point, (obstacle.x, obstacle.y)) <= obstacle.radius:
-            return True
-    return False
-
 
 def _distance(
     first: Tuple[float, float],

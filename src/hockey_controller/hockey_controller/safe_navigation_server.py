@@ -20,7 +20,6 @@ from rclpy.qos import qos_profile_sensor_data
 
 from hockey_interfaces.action import NavigateToPoint
 from hockey_controller.clf_cbf_qp import CircularObstacle
-from hockey_controller.clf_cbf_qp import DynamicCircularObstacle
 from hockey_controller.clf_cbf_qp import QpResult
 from hockey_controller.clf_cbf_qp import get_u_nom
 from hockey_controller.clf_cbf_qp import obstacle_arrays_valid
@@ -38,20 +37,26 @@ class SafeNavigationState(Enum):
 
 
 @dataclass
-class DynamicRobotState:
+class PoseObstacleState:
     x: float
     y: float
     yaw: float
     timestamp: float
-    velocity_x: float = 0.0
-    velocity_y: float = 0.0
+    radius: float
+
+
+@dataclass(frozen=True)
+class PoseObstacleSpec:
+    key: str
+    topic: str
+    radius: float
 
 
 class SafeNavigationServer(Node):
     """Action server using approximate linearization for a unicycle robot."""
 
     CONTROL_RATE_HZ = 20.0
-    POSITION_TOLERANCE = 0.08
+    POSITION_TOLERANCE = 0.01
     HEADING_TOLERANCE = 0.08
     POSE_TIMEOUT_SEC = 150.0
     TARGET_POSE_TIMEOUT_SEC = 150.0
@@ -67,13 +72,11 @@ class SafeNavigationServer(Node):
     TARGET_OFFSET_X = 0.0
     TARGET_OFFSET_Y = 0.0
     TARGET_ORIENTATION_OFFSET = 0.0
-    DYNAMIC_OBSTACLES_REQUIRED = True
-    DYNAMIC_OBSTACLE_TIMEOUT_SEC = 150.0
-    DYNAMIC_OBSTACLE_MAX_SPEED = 2.0
-    DYNAMIC_CONTROLLED_ROBOT_RADIUS = 0.0
-    DYNAMIC_ROBOT_RADIUS = 0.18
-    DYNAMIC_ROBOT_SAFETY_MARGIN = 0.0
-    DYNAMIC_CBF_GAMMA = 2.0
+    POSE_OBSTACLE_TIMEOUT_SEC = 150.0
+    POSE_OBSTACLE_CONTROLLED_ROBOT_RADIUS = 0.0
+    POSE_OBSTACLE_ROBOT_RADIUS = 0.18
+    POSE_OBSTACLE_ROBOT_SAFETY_MARGIN = 0.0
+    DEFAULT_POSE_OBSTACLE_RADIUS = 0.10
 
     def __init__(self) -> None:
         super().__init__("safe_navigation_server")
@@ -83,6 +86,7 @@ class SafeNavigationServer(Node):
         self.declare_parameter("cmd_vel_topic", "")
         self.declare_parameter("target_pose_topic", "")
         self.declare_parameter("action_name", "safe_navigate_to_point")
+        self.declare_parameter("lookahead_distance", self.L)
         self.declare_parameter("obstacle_safe_margin", 0.10)
         self.declare_parameter("robot_safety_radius", 0.20)
         obstacle_array_descriptor = ParameterDescriptor(dynamic_typing=True)
@@ -95,8 +99,19 @@ class SafeNavigationServer(Node):
         )
         self.declare_parameter("orient_to_target", False)
         self.declare_parameter("use_target_pose", True)
-        dynamic_ids_descriptor = ParameterDescriptor(dynamic_typing=True)
-        self.declare_parameter("dynamic_robot_ids", [], dynamic_ids_descriptor)
+        obstacle_robot_ids_descriptor = ParameterDescriptor(dynamic_typing=True)
+        self.declare_parameter(
+            "obstacle_robot_ids",
+            [],
+            obstacle_robot_ids_descriptor,
+        )
+        obstacle_pose_topics_descriptor = ParameterDescriptor(dynamic_typing=True)
+        self.declare_parameter(
+            "obstacle_pose_topics",
+            [],
+            obstacle_pose_topics_descriptor,
+        )
+        self.declare_parameter("obstacle_pose_radii", [], obstacle_array_descriptor)
 
         self.robot_id = int(self.get_parameter("robot_id").value)
         pose_topic = str(self.get_parameter("pose_topic").value)
@@ -123,7 +138,7 @@ class SafeNavigationServer(Node):
         self.heading_tolerance = self.HEADING_TOLERANCE
         self.pose_timeout_sec = self.POSE_TIMEOUT_SEC
         self.target_pose_timeout_sec = self.TARGET_POSE_TIMEOUT_SEC
-        self.l = self.L
+        self.l = float(self.get_parameter("lookahead_distance").value)
         self.K = self.DEFAULT_K
         self.clf_gamma = self.CLF_GAMMA
         self.cbf_gamma = self.CBF_GAMMA
@@ -147,17 +162,22 @@ class SafeNavigationServer(Node):
         self.target_orientation_offset = self.TARGET_ORIENTATION_OFFSET
         self.orient_to_target = bool(self.get_parameter("orient_to_target").value)
         self.use_target_pose = bool(self.get_parameter("use_target_pose").value)
-        self.dynamic_robot_ids = self._sanitize_dynamic_robot_ids(
-            self._parameter_int_array("dynamic_robot_ids")
+        self.obstacle_robot_ids = self._sanitize_obstacle_robot_ids(
+            self._parameter_int_array("obstacle_robot_ids")
         )
-        self.dynamic_obstacles_required = self.DYNAMIC_OBSTACLES_REQUIRED
-        self.dynamic_obstacle_timeout_sec = self.DYNAMIC_OBSTACLE_TIMEOUT_SEC
-        self.dynamic_obstacle_max_speed = self.DYNAMIC_OBSTACLE_MAX_SPEED
-        self.dynamic_controlled_robot_radius = self.DYNAMIC_CONTROLLED_ROBOT_RADIUS
-        self.dynamic_robot_radius = self.DYNAMIC_ROBOT_RADIUS
-        self.dynamic_robot_safety_margin = self.DYNAMIC_ROBOT_SAFETY_MARGIN
-        self.dynamic_cbf_gamma = self.DYNAMIC_CBF_GAMMA
-        self._validate_dynamic_obstacle_parameters()
+        self.obstacle_pose_topics = self._sanitize_obstacle_pose_topics(
+            self._parameter_string_array("obstacle_pose_topics")
+        )
+        self.obstacle_pose_radii = self._sanitize_obstacle_pose_radii(
+            self._parameter_array("obstacle_pose_radii"),
+            len(self.obstacle_pose_topics),
+        )
+        self.obstacle_pose_timeout_sec = self.POSE_OBSTACLE_TIMEOUT_SEC
+        self.pose_obstacle_controlled_robot_radius = self.POSE_OBSTACLE_CONTROLLED_ROBOT_RADIUS
+        self.pose_obstacle_robot_radius = self.POSE_OBSTACLE_ROBOT_RADIUS
+        self.pose_obstacle_robot_safety_margin = self.POSE_OBSTACLE_ROBOT_SAFETY_MARGIN
+        self.default_pose_obstacle_radius = self.DEFAULT_POSE_OBSTACLE_RADIUS
+        self._validate_pose_obstacle_parameters()
 
         self._pose_lock = Lock()
         self._latest_pose: Optional[Tuple[float, float, float]] = None
@@ -165,14 +185,18 @@ class SafeNavigationServer(Node):
         self._target_pose_lock = Lock()
         self._latest_target_pose: Optional[Tuple[float, float, float]] = None
         self._latest_target_pose_time = None
-        self._dynamic_obstacle_lock = Lock()
-        self._dynamic_robot_states: Dict[int, DynamicRobotState] = {}
-        self._dynamic_robot_subscriptions = {}
+        self._pose_obstacle_lock = Lock()
+        self._pose_obstacle_states: Dict[str, PoseObstacleState] = {}
+        self._pose_obstacle_specs: List[PoseObstacleSpec] = []
+        self._pose_obstacle_subscriptions = {}
         self._goal_lock = Lock()
         self._goal_active = False
         self._last_qp_warning_time = 0.0
         self._last_diagnostic_log_time = 0.0
         self._last_qp_solve_time_sec = 0.0
+        self._last_static_obstacle_count = 0
+        self._last_pose_obstacle_count = 0
+        self._last_min_obstacle_h = math.inf
         self._loop_count = 0
         self._loop_rate_window_start = time.monotonic()
         self._measured_control_rate_hz = 0.0
@@ -197,7 +221,7 @@ class SafeNavigationServer(Node):
             qos_profile_sensor_data,
             callback_group=self._callback_group,
         )
-        self._reset_dynamic_robot_subscriptions(self.dynamic_robot_ids)
+        self._reset_pose_obstacle_subscriptions()
         self._action_server = ActionServer(
             self,
             NavigateToPoint,
@@ -216,11 +240,13 @@ class SafeNavigationServer(Node):
             f"  target_pose = {self.target_pose_topic}\n"
             f"  cmd_vel     = {self.cmd_vel_topic}\n"
             f"  action      = {self.action_name}\n"
+            f"  lookahead   = {self.l}\n"
             f"  offset      = ({self.target_offset_x}, {self.target_offset_y})\n"
             f"  orient      = {self.orient_to_target}\n"
             f"  use target pose = {self.use_target_pose}\n"
             f"  obstacles   = {len(self.obstacle_x)}\n"
-            f"  dynamic robots = {self.dynamic_robot_ids}"
+            f"  obstacle robots = {self.obstacle_robot_ids}\n"
+            f"  pose obstacle topics = {self.obstacle_pose_topics}"
         )
 
     def _handle_parameter_update(self, parameters) -> SetParametersResult:
@@ -256,6 +282,18 @@ class SafeNavigationServer(Node):
                         reason="obstacle_safe_margin must be non-negative",
                     )
 
+            if parameter.name == "lookahead_distance":
+                if parameter.type_ != Parameter.Type.DOUBLE:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="lookahead_distance must be a float",
+                    )
+                if parameter.value <= 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="lookahead_distance must be positive",
+                    )
+
         updated_obstacle_x = self.obstacle_x
         updated_obstacle_y = self.obstacle_y
         updated_obstacle_radius = self.obstacle_radius
@@ -275,18 +313,47 @@ class SafeNavigationServer(Node):
                     reason=f"{parameter.name} must be an array of numbers",
                 )
 
-        updated_dynamic_robot_ids = self.dynamic_robot_ids
+        updated_obstacle_robot_ids = self.obstacle_robot_ids
+        updated_obstacle_pose_topics = self.obstacle_pose_topics
+        updated_obstacle_pose_radii = self.obstacle_pose_radii
+        pose_topics_changed = False
+        pose_radii_changed = False
         for parameter in parameters:
             try:
-                if parameter.name == "dynamic_robot_ids":
-                    updated_dynamic_robot_ids = self._sanitize_dynamic_robot_ids(
+                if parameter.name == "obstacle_robot_ids":
+                    updated_obstacle_robot_ids = self._sanitize_obstacle_robot_ids(
                         self._coerce_int_array(parameter.value)
+                    )
+                elif parameter.name == "obstacle_pose_topics":
+                    pose_topics_changed = True
+                    updated_obstacle_pose_topics = (
+                        self._sanitize_obstacle_pose_topics(
+                            self._coerce_string_array(parameter.value)
+                        )
+                    )
+                elif parameter.name == "obstacle_pose_radii":
+                    pose_radii_changed = True
+                    updated_obstacle_pose_radii = (
+                        self._sanitize_obstacle_pose_radii(
+                            self._coerce_float_array(parameter.value),
+                            len(updated_obstacle_pose_topics),
+                        )
                     )
             except (TypeError, ValueError):
                 return SetParametersResult(
                     successful=False,
-                    reason="dynamic_robot_ids must be an array of integers",
+                    reason=(
+                        "obstacle_robot_ids must be integers, "
+                        "obstacle_pose_topics must be strings, and "
+                        "obstacle_pose_radii must be non-negative numbers"
+                    ),
                 )
+
+        if pose_topics_changed and not pose_radii_changed:
+            updated_obstacle_pose_radii = self._sanitize_obstacle_pose_radii(
+                [],
+                len(updated_obstacle_pose_topics),
+            )
 
         if not self._obstacle_arrays_can_update(
             updated_obstacle_x,
@@ -304,6 +371,8 @@ class SafeNavigationServer(Node):
         for parameter in parameters:
             if parameter.name == "obstacle_safe_margin":
                 self.obstacle_safe_margin = float(parameter.value)
+            elif parameter.name == "lookahead_distance":
+                self.l = float(parameter.value)
             elif parameter.name == "robot_safety_radius":
                 self.robot_safety_radius = float(parameter.value)
             elif parameter.name == "obstacle_x":
@@ -321,9 +390,16 @@ class SafeNavigationServer(Node):
                 self.orient_to_target = bool(parameter.value)
             elif parameter.name == "use_target_pose":
                 self.use_target_pose = bool(parameter.value)
-            elif parameter.name == "dynamic_robot_ids":
-                self.dynamic_robot_ids = updated_dynamic_robot_ids
-                self._reset_dynamic_robot_subscriptions(self.dynamic_robot_ids)
+            elif parameter.name == "obstacle_robot_ids":
+                self.obstacle_robot_ids = updated_obstacle_robot_ids
+                self._reset_pose_obstacle_subscriptions()
+            elif parameter.name == "obstacle_pose_topics":
+                self.obstacle_pose_topics = updated_obstacle_pose_topics
+                self.obstacle_pose_radii = updated_obstacle_pose_radii
+                self._reset_pose_obstacle_subscriptions()
+            elif parameter.name == "obstacle_pose_radii":
+                self.obstacle_pose_radii = updated_obstacle_pose_radii
+                self._reset_pose_obstacle_subscriptions()
 
         return SetParametersResult(successful=True)
 
@@ -373,22 +449,17 @@ class SafeNavigationServer(Node):
                 "equal length and non-negative radii"
             )
 
-    def _validate_dynamic_obstacle_parameters(self) -> None:
-        positive_values = (
-            self.dynamic_obstacle_timeout_sec,
-            self.dynamic_cbf_gamma,
-        )
-        if any(value <= 0.0 for value in positive_values):
-            raise ValueError("dynamic obstacle controller constants must be positive")
+    def _validate_pose_obstacle_parameters(self) -> None:
+        if self.obstacle_pose_timeout_sec <= 0.0:
+            raise ValueError("pose obstacle controller constants must be positive")
         non_negative_values = (
-            self.dynamic_obstacle_max_speed,
-            self.dynamic_controlled_robot_radius,
-            self.dynamic_robot_radius,
-            self.dynamic_robot_safety_margin,
+            self.pose_obstacle_controlled_robot_radius,
+            self.pose_obstacle_robot_radius,
+            self.pose_obstacle_robot_safety_margin,
         )
         if any(value < 0.0 for value in non_negative_values):
             raise ValueError(
-                "dynamic obstacle radius and speed constants must be non-negative"
+                "pose obstacle radius constants must be non-negative"
             )
 
     def _parameter_array(self, name: str) -> List[float]:
@@ -396,6 +467,9 @@ class SafeNavigationServer(Node):
 
     def _parameter_int_array(self, name: str) -> List[int]:
         return self._coerce_int_array(self.get_parameter(name).value)
+
+    def _parameter_string_array(self, name: str) -> List[str]:
+        return self._coerce_string_array(self.get_parameter(name).value)
 
     def _coerce_float_array(self, value) -> List[float]:
         if isinstance(value, str):
@@ -407,7 +481,12 @@ class SafeNavigationServer(Node):
             value = ast.literal_eval(value)
         return [int(item) for item in value]
 
-    def _sanitize_dynamic_robot_ids(self, robot_ids: List[int]) -> List[int]:
+    def _coerce_string_array(self, value) -> List[str]:
+        if isinstance(value, str):
+            value = ast.literal_eval(value)
+        return [str(item) for item in value]
+
+    def _sanitize_obstacle_robot_ids(self, robot_ids: List[int]) -> List[int]:
         sanitized = []
         for robot_id in robot_ids:
             if robot_id == self.robot_id or robot_id in sanitized:
@@ -416,6 +495,28 @@ class SafeNavigationServer(Node):
                 continue
             sanitized.append(robot_id)
         return sanitized
+
+    def _sanitize_obstacle_pose_topics(self, topics: List[str]) -> List[str]:
+        sanitized = []
+        for topic in topics:
+            topic = topic.strip()
+            if not topic or topic in sanitized:
+                continue
+            sanitized.append(topic)
+        return sanitized
+
+    def _sanitize_obstacle_pose_radii(
+        self,
+        radii: List[float],
+        topic_count: int,
+    ) -> List[float]:
+        if any(radius < 0.0 for radius in radii):
+            raise ValueError("pose obstacle radii must be non-negative")
+        if not radii:
+            return [self.DEFAULT_POSE_OBSTACLE_RADIUS] * topic_count
+        if len(radii) != topic_count:
+            raise ValueError("pose obstacle radii must match topic count")
+        return radii
 
     def _obstacle_arrays_can_update(
         self,
@@ -453,32 +554,62 @@ class SafeNavigationServer(Node):
             )
             self._latest_target_pose_time = self.get_clock().now()
 
-    def _reset_dynamic_robot_subscriptions(self, robot_ids: List[int]) -> None:
-        for subscription in self._dynamic_robot_subscriptions.values():
+    def _reset_pose_obstacle_subscriptions(self) -> None:
+        for subscription in self._pose_obstacle_subscriptions.values():
             self.destroy_subscription(subscription)
-        self._dynamic_robot_subscriptions = {}
-        with self._dynamic_obstacle_lock:
-            self._dynamic_robot_states = {}
+        self._pose_obstacle_subscriptions = {}
+        with self._pose_obstacle_lock:
+            self._pose_obstacle_states = {}
 
-        for robot_id in robot_ids:
-            topic = f"/vrpn_mocap/dji_robot_{robot_id}/pose"
-            self._dynamic_robot_subscriptions[robot_id] = self.create_subscription(
+        specs: List[PoseObstacleSpec] = []
+        robot_radius = (
+            self.pose_obstacle_controlled_robot_radius
+            + self.pose_obstacle_robot_radius
+            + self.pose_obstacle_robot_safety_margin
+        )
+        for robot_id in self.obstacle_robot_ids:
+            specs.append(
+                PoseObstacleSpec(
+                    key=f"robot_{robot_id}",
+                    topic=f"/vrpn_mocap/dji_robot_{robot_id}/pose",
+                    radius=robot_radius,
+                )
+            )
+
+        for index, topic in enumerate(self.obstacle_pose_topics):
+            object_radius = self.obstacle_pose_radii[index]
+            specs.append(
+                PoseObstacleSpec(
+                    key=f"object_{index}",
+                    topic=topic,
+                    radius=(
+                        self.pose_obstacle_controlled_robot_radius
+                        + object_radius
+                        + self.pose_obstacle_robot_safety_margin
+                    ),
+                )
+            )
+
+        self._pose_obstacle_specs = specs
+        for spec in specs:
+            self._pose_obstacle_subscriptions[spec.key] = self.create_subscription(
                 PoseStamped,
-                topic,
-                lambda message, robot_id=robot_id: (
-                    self._dynamic_robot_pose_callback(robot_id, message)
+                spec.topic,
+                lambda message, spec=spec: (
+                    self._pose_obstacle_callback(spec, message)
                 ),
                 qos_profile_sensor_data,
                 callback_group=self._callback_group,
             )
-        if robot_ids:
+        if specs:
             self.get_logger().info(
-                f"Dynamic robot obstacle subscriptions: {robot_ids}"
+                "Pose obstacle subscriptions: "
+                f"{[(spec.key, spec.topic, round(spec.radius, 3)) for spec in specs]}"
             )
 
-    def _dynamic_robot_pose_callback(
+    def _pose_obstacle_callback(
         self,
-        robot_id: int,
+        spec: PoseObstacleSpec,
         message: PoseStamped,
     ) -> None:
         pose = message.pose
@@ -489,42 +620,13 @@ class SafeNavigationServer(Node):
         if not all(math.isfinite(value) for value in (x, y, yaw)):
             return
 
-        with self._dynamic_obstacle_lock:
-            previous = self._dynamic_robot_states.get(robot_id)
-            if previous is None:
-                self._dynamic_robot_states[robot_id] = DynamicRobotState(
-                    x=x,
-                    y=y,
-                    yaw=yaw,
-                    timestamp=now,
-                )
-                return
-
-            velocity_x = 0.0
-            velocity_y = 0.0
-            dt = now - previous.timestamp
-            if 1e-3 <= dt <= self.dynamic_obstacle_timeout_sec:
-                raw_velocity_x = (x - previous.x) / dt
-                raw_velocity_y = (y - previous.y) / dt
-                raw_speed = math.hypot(raw_velocity_x, raw_velocity_y)
-                if math.isfinite(raw_speed):
-                    if (
-                        self.dynamic_obstacle_max_speed > 0.0
-                        and raw_speed > self.dynamic_obstacle_max_speed
-                    ):
-                        scale = self.dynamic_obstacle_max_speed / raw_speed
-                        raw_velocity_x *= scale
-                        raw_velocity_y *= scale
-                    velocity_x = raw_velocity_x
-                    velocity_y = raw_velocity_y
-
-            self._dynamic_robot_states[robot_id] = DynamicRobotState(
+        with self._pose_obstacle_lock:
+            self._pose_obstacle_states[spec.key] = PoseObstacleState(
                 x=x,
                 y=y,
                 yaw=yaw,
                 timestamp=now,
-                velocity_x=velocity_x,
-                velocity_y=velocity_y,
+                radius=spec.radius,
             )
 
     def _goal_callback(self, request: NavigateToPoint.Goal) -> GoalResponse:
@@ -766,10 +868,6 @@ class SafeNavigationServer(Node):
             g_x,
             g_y,
         )
-        dynamic_obstacles = self._get_dynamic_obstacles()
-        if dynamic_obstacles is None:
-            self._log_qp_failure("stale required dynamic obstacle data")
-            return None
         qp_start_time = time.monotonic()
         qp_result = self._solve_clf_cbf_qp(
             p_x,
@@ -778,7 +876,6 @@ class SafeNavigationServer(Node):
             g_y,
             u_nom_x,
             u_nom_y,
-            dynamic_obstacles,
         )
         qp_solve_time_sec = time.monotonic() - qp_start_time
         if not qp_result.success:
@@ -837,9 +934,18 @@ class SafeNavigationServer(Node):
         g_y: float,
         u_nom_x: float,
         u_nom_y: float,
-        dynamic_obstacles: List[DynamicCircularObstacle],
     ) -> QpResult:
         try:
+            obstacles = self._get_obstacles()
+            self._last_min_obstacle_h = min(
+                (
+                    (p_x - obstacle.x) ** 2
+                    + (p_y - obstacle.y) ** 2
+                    - obstacle.radius**2
+                    for obstacle in obstacles
+                ),
+                default=math.inf,
+            )
             return solve_clf_cbf_qp(
                 p_x,
                 p_y,
@@ -847,14 +953,12 @@ class SafeNavigationServer(Node):
                 g_y,
                 u_nom_x,
                 u_nom_y,
-                self._get_obstacles(),
+                obstacles,
                 self.clf_gamma,
                 self.cbf_gamma,
                 self.w_delta,
                 self.max_point_speed,
                 self.qp_solver,
-                dynamic_obstacles,
-                self.dynamic_cbf_gamma,
             )
         except Exception as exception:
             return QpResult(success=False, status=f"exception: {exception}")
@@ -872,14 +976,16 @@ class SafeNavigationServer(Node):
         return v, w
 
     def _get_obstacles(self) -> List[CircularObstacle]:
+        obstacles = []
+        pose_obstacle_count = 0
         if not obstacle_arrays_valid(
             self.obstacle_x,
             self.obstacle_y,
             self.obstacle_radius,
         ):
-            return []
+            self._last_pose_obstacle_count = pose_obstacle_count
+            return obstacles
 
-        obstacles = []
         for obstacle_x, obstacle_y, obstacle_radius in zip(
             self.obstacle_x,
             self.obstacle_y,
@@ -894,57 +1000,44 @@ class SafeNavigationServer(Node):
                     + self.obstacle_safe_margin,
                 )
             )
-        return obstacles
-
-    def _get_dynamic_obstacles(self) -> Optional[List[DynamicCircularObstacle]]:
-        if not self.dynamic_robot_ids:
-            return []
 
         now = time.monotonic()
-        obstacles = []
-        stale_ids = []
-        with self._dynamic_obstacle_lock:
+        stale_keys = []
+        with self._pose_obstacle_lock:
             states = {
-                robot_id: self._dynamic_robot_states.get(robot_id)
-                for robot_id in self.dynamic_robot_ids
+                spec.key: self._pose_obstacle_states.get(spec.key)
+                for spec in self._pose_obstacle_specs
             }
 
-        for robot_id, state in states.items():
+        for key, state in states.items():
             if state is None:
-                stale_ids.append(robot_id)
+                stale_keys.append(key)
                 continue
             age = now - state.timestamp
-            if age > self.dynamic_obstacle_timeout_sec:
-                stale_ids.append(robot_id)
+            if age > self.obstacle_pose_timeout_sec:
+                stale_keys.append(key)
                 continue
-            values = (
-                state.x,
-                state.y,
-                state.velocity_x,
-                state.velocity_y,
-            )
+            values = (state.x, state.y, state.radius)
             if not all(math.isfinite(value) for value in values):
                 self._log_qp_failure(
-                    f"invalid dynamic obstacle state for robot {robot_id}"
+                    f"invalid pose obstacle state for {key}"
                 )
-                return None
+                continue
             obstacles.append(
-                DynamicCircularObstacle(
+                CircularObstacle(
                     state.x,
                     state.y,
-                    state.velocity_x,
-                    state.velocity_y,
-                    self.dynamic_controlled_robot_radius
-                    + self.dynamic_robot_radius
-                    + self.dynamic_robot_safety_margin,
+                    state.radius,
                 )
             )
+            pose_obstacle_count += 1
 
-        if stale_ids and self.dynamic_obstacles_required:
+        if stale_keys:
             self._log_qp_failure(
-                f"stale dynamic obstacle data for robots {stale_ids}"
+                f"stale pose obstacle data for {stale_keys}"
             )
-            return None
+        self._last_static_obstacle_count = len(obstacles) - pose_obstacle_count
+        self._last_pose_obstacle_count = pose_obstacle_count
         return obstacles
 
     def _log_qp_failure(self, status: str) -> None:
@@ -952,7 +1045,13 @@ class SafeNavigationServer(Node):
         if now - self._last_qp_warning_time < 1.0:
             return
         self._last_qp_warning_time = now
-        self.get_logger().warning(f"CLF-CBF-QP failed: {status}")
+        self.get_logger().warning(
+            "CLF-CBF-QP failed: "
+            f"{status}, "
+            f"static_obstacles={self._last_static_obstacle_count}, "
+            f"pose_obstacles={self._last_pose_obstacle_count}, "
+            f"min_h={self._last_min_obstacle_h:.4f}"
+        )
 
     def _log_qp_diagnostics(
         self,
@@ -967,10 +1066,6 @@ class SafeNavigationServer(Node):
             return
         self._last_diagnostic_log_time = now
         min_static_h = min((cbf.h for cbf in result.cbfs), default=math.inf)
-        min_dynamic_h = min(
-            (cbf.h for cbf in result.dynamic_cbfs),
-            default=math.inf,
-        )
         clf_value = result.clf.v if result.clf is not None else math.nan
         self.get_logger().info(
             "CLF-CBF-QP: "
@@ -979,11 +1074,10 @@ class SafeNavigationServer(Node):
             f"measured_rate={self._measured_control_rate_hz:.1f}Hz, "
             f"qp_solve={1000.0 * self._last_qp_solve_time_sec:.1f}ms, "
             f"static_obstacles={len(result.cbfs)}, "
-            f"dynamic_obstacles={len(result.dynamic_cbfs)}, "
+            f"pose_obstacles={self._last_pose_obstacle_count}, "
             f"V={clf_value:.4f}, "
             f"delta={result.delta:.4f}, "
             f"min_static_h={min_static_h:.4f}, "
-            f"min_dynamic_h={min_dynamic_h:.4f}, "
             f"u_nom=({u_nom_x:.3f}, {u_nom_y:.3f}), "
             f"u_safe=({result.u_x:.3f}, {result.u_y:.3f})"
         )
