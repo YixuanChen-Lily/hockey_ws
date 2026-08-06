@@ -4,8 +4,10 @@ log/
 
 *.pyc
 __pycache__/
+.pytest_cache/
 
 .DS_Store
+core
 
 # Local YASMIN demo packages
 src/yasmin_action_fsm/
@@ -13,3 +15,5 @@ src/yasmin_action_interfaces/
 
 
 src/hockey_controller/parking_plot.png
+src/hockey_controller/clf_cbf_log.csv
+src/hockey_controller/clf_cbf_plot.png
