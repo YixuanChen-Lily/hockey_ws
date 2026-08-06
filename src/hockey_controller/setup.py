@@ -62,6 +62,10 @@ setup(
                 "parking_plotter = "
                 "hockey_controller.parking_plotter:main"
             ),
+            (
+                "plot_clf_cbf_log = "
+                "hockey_controller.plot_clf_cbf_log:main"
+            ),
         ],
     },
 )

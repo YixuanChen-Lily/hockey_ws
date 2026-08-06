@@ -26,6 +26,9 @@ def generate_launch_description() -> LaunchDescription:
         LaunchConfiguration("safe_obstacle_pose_radii"),
         value_type=str,
     )
+    safe_obstacle_safety_margin = LaunchConfiguration(
+        "safe_obstacle_safety_margin"
+    )
 
     parking_enabled = LaunchConfiguration("parking_enabled")
     cushion_length = LaunchConfiguration("cushion_length")
@@ -138,6 +141,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("safe_obstacle_robot_ids", default_value="[]"),
             DeclareLaunchArgument("safe_obstacle_pose_topics", default_value="[]"),
             DeclareLaunchArgument("safe_obstacle_pose_radii", default_value="[]"),
+            DeclareLaunchArgument("safe_obstacle_safety_margin", default_value="0.0"),
 
             # Parking geometry and route planning.
             DeclareLaunchArgument("parking_enabled", default_value="true"),
@@ -287,6 +291,9 @@ def generate_launch_description() -> LaunchDescription:
                         "obstacle_robot_ids": safe_obstacle_robot_ids,
                         "obstacle_pose_topics": safe_obstacle_pose_topics,
                         "obstacle_pose_radii": safe_obstacle_pose_radii,
+                        "obstacle_pose_safety_margin": (
+                            safe_obstacle_safety_margin
+                        ),
                         "target_pose_topic": target_pose_topic,
                     }
                 ],
@@ -321,13 +328,9 @@ def generate_launch_description() -> LaunchDescription:
                         "pose_timeout_sec": pose_timeout_sec,
                         "action_wait_timeout_sec": action_wait_timeout_sec,
                         "align_timeout_sec": align_timeout_sec,
-                        "shooting_pose_timeout_sec": shooting_pose_timeout_sec,
                         "safe_lookahead_distance": safe_lookahead_distance,
                         "shooting_center_to_puck_distance": (
                             shooting_center_to_puck_distance
-                        ),
-                        "shooting_puck_obstacle_enabled": (
-                            shooting_puck_obstacle_enabled
                         ),
                         "shooting_puck_obstacle_radius": (
                             shooting_puck_obstacle_radius
@@ -459,6 +462,11 @@ def generate_launch_description() -> LaunchDescription:
                         ),
                         "safe_lookahead_distance": safe_lookahead_distance,
                         "obstacle_robot_ids": safe_obstacle_robot_ids,
+                        "obstacle_pose_topics": safe_obstacle_pose_topics,
+                        "obstacle_pose_radii": safe_obstacle_pose_radii,
+                        "obstacle_robot_safety_margin": (
+                            safe_obstacle_safety_margin
+                        ),
                     }
                 ],
             ),

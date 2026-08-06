@@ -118,6 +118,22 @@ def solve_clf_cbf_qp(
         ]
     )
 
+    nominal_result = _nominal_solution_if_feasible(
+        p_x,
+        p_y,
+        g_x,
+        g_y,
+        u_nom_x,
+        u_nom_y,
+        obstacles,
+        clf_gamma,
+        cbf_gamma,
+        w_delta,
+        max_point_speed,
+    )
+    if nominal_result is not None:
+        return nominal_result
+
     h_diag = (2.0, 2.0, 2.0 * w_delta)
     linear = (-2.0 * u_nom_x, -2.0 * u_nom_y, 0.0)
     P = np.diag(np.array(h_diag, dtype=float))
@@ -194,6 +210,55 @@ def _build_qp_result(
         objective=_objective((u_x, u_y, delta), u_nom_x, u_nom_y, w_delta),
         clf=clf,
         cbfs=cbfs,
+    )
+
+
+def _nominal_solution_if_feasible(
+    p_x,
+    p_y,
+    g_x,
+    g_y,
+    u_nom_x,
+    u_nom_y,
+    obstacles,
+    clf_gamma,
+    cbf_gamma,
+    w_delta,
+    max_point_speed,
+):
+    tolerance = 1e-9
+    if abs(u_nom_x) > max_point_speed + tolerance:
+        return None
+    if abs(u_nom_y) > max_point_speed + tolerance:
+        return None
+
+    for obstacle in obstacles:
+        dx = p_x - obstacle.x
+        dy = p_y - obstacle.y
+        h = dx**2 + dy**2 - obstacle.radius**2
+        cbf_residual = 2.0 * dx * u_nom_x + 2.0 * dy * u_nom_y + cbf_gamma * h
+        if cbf_residual < -tolerance:
+            return None
+
+    e_x = p_x - g_x
+    e_y = p_y - g_y
+    value = 0.5 * (e_x**2 + e_y**2)
+    delta = max(0.0, e_x * u_nom_x + e_y * u_nom_y + clf_gamma * value)
+    return _build_qp_result(
+        p_x,
+        p_y,
+        g_x,
+        g_y,
+        u_nom_x,
+        u_nom_y,
+        delta,
+        u_nom_x,
+        u_nom_y,
+        obstacles,
+        clf_gamma,
+        cbf_gamma,
+        w_delta,
+        "u_nom_feasible",
     )
 
 

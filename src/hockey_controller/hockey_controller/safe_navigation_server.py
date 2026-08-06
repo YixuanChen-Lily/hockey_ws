@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
+import csv
 import math
 import ast
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -99,6 +101,11 @@ class SafeNavigationServer(Node):
         )
         self.declare_parameter("orient_to_target", False)
         self.declare_parameter("use_target_pose", True)
+        self.declare_parameter("clf_cbf_log_enabled", True)
+        self.declare_parameter(
+            "clf_cbf_log_path",
+            "/hockey_ws/src/hockey_controller/clf_cbf_log.csv",
+        )
         obstacle_robot_ids_descriptor = ParameterDescriptor(dynamic_typing=True)
         self.declare_parameter(
             "obstacle_robot_ids",
@@ -112,6 +119,7 @@ class SafeNavigationServer(Node):
             obstacle_pose_topics_descriptor,
         )
         self.declare_parameter("obstacle_pose_radii", [], obstacle_array_descriptor)
+        self.declare_parameter("obstacle_pose_safety_margin", 0.0)
 
         self.robot_id = int(self.get_parameter("robot_id").value)
         pose_topic = str(self.get_parameter("pose_topic").value)
@@ -162,6 +170,10 @@ class SafeNavigationServer(Node):
         self.target_orientation_offset = self.TARGET_ORIENTATION_OFFSET
         self.orient_to_target = bool(self.get_parameter("orient_to_target").value)
         self.use_target_pose = bool(self.get_parameter("use_target_pose").value)
+        self.clf_cbf_log_enabled = bool(
+            self.get_parameter("clf_cbf_log_enabled").value
+        )
+        self.clf_cbf_log_path = str(self.get_parameter("clf_cbf_log_path").value)
         self.obstacle_robot_ids = self._sanitize_obstacle_robot_ids(
             self._parameter_int_array("obstacle_robot_ids")
         )
@@ -175,7 +187,9 @@ class SafeNavigationServer(Node):
         self.obstacle_pose_timeout_sec = self.POSE_OBSTACLE_TIMEOUT_SEC
         self.pose_obstacle_controlled_robot_radius = self.POSE_OBSTACLE_CONTROLLED_ROBOT_RADIUS
         self.pose_obstacle_robot_radius = self.POSE_OBSTACLE_ROBOT_RADIUS
-        self.pose_obstacle_robot_safety_margin = self.POSE_OBSTACLE_ROBOT_SAFETY_MARGIN
+        self.pose_obstacle_robot_safety_margin = float(
+            self.get_parameter("obstacle_pose_safety_margin").value
+        )
         self.default_pose_obstacle_radius = self.DEFAULT_POSE_OBSTACLE_RADIUS
         self._validate_pose_obstacle_parameters()
 
@@ -193,6 +207,7 @@ class SafeNavigationServer(Node):
         self._goal_active = False
         self._last_qp_warning_time = 0.0
         self._last_diagnostic_log_time = 0.0
+        self._last_qp_problem_log_time = 0.0
         self._last_qp_solve_time_sec = 0.0
         self._last_static_obstacle_count = 0
         self._last_pose_obstacle_count = 0
@@ -200,6 +215,7 @@ class SafeNavigationServer(Node):
         self._loop_count = 0
         self._loop_rate_window_start = time.monotonic()
         self._measured_control_rate_hz = 0.0
+        self._clf_cbf_log_started = False
         self._callback_group = ReentrantCallbackGroup()
 
         self._cmd_vel_publisher = self.create_publisher(
@@ -280,6 +296,18 @@ class SafeNavigationServer(Node):
                     return SetParametersResult(
                         successful=False,
                         reason="obstacle_safe_margin must be non-negative",
+                    )
+
+            if parameter.name == "obstacle_pose_safety_margin":
+                if parameter.type_ != Parameter.Type.DOUBLE:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="obstacle_pose_safety_margin must be a float",
+                    )
+                if parameter.value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="obstacle_pose_safety_margin must be non-negative",
                     )
 
             if parameter.name == "lookahead_distance":
@@ -371,6 +399,9 @@ class SafeNavigationServer(Node):
         for parameter in parameters:
             if parameter.name == "obstacle_safe_margin":
                 self.obstacle_safe_margin = float(parameter.value)
+            elif parameter.name == "obstacle_pose_safety_margin":
+                self.pose_obstacle_robot_safety_margin = float(parameter.value)
+                self._reset_pose_obstacle_subscriptions()
             elif parameter.name == "lookahead_distance":
                 self.l = float(parameter.value)
             elif parameter.name == "robot_safety_radius":
@@ -879,15 +910,42 @@ class SafeNavigationServer(Node):
         )
         qp_solve_time_sec = time.monotonic() - qp_start_time
         if not qp_result.success:
+            self._write_clf_cbf_log(
+                qp_result,
+                p_x,
+                p_y,
+                g_x,
+                g_y,
+                u_nom_x,
+                u_nom_y,
+            )
             self._log_qp_failure(qp_result.status)
             return None
         if not all(
             math.isfinite(value)
             for value in (qp_result.u_x, qp_result.u_y, qp_result.delta)
         ):
+            self._write_clf_cbf_log(
+                qp_result,
+                p_x,
+                p_y,
+                g_x,
+                g_y,
+                u_nom_x,
+                u_nom_y,
+            )
             self._log_qp_failure("non-finite solution")
             return None
 
+        self._write_clf_cbf_log(
+            qp_result,
+            p_x,
+            p_y,
+            g_x,
+            g_y,
+            u_nom_x,
+            u_nom_y,
+        )
         desired_linear_velocity, desired_angular_velocity = (
             self._pdot_to_v_and_w(
                 qp_result.u_x,
@@ -945,6 +1003,15 @@ class SafeNavigationServer(Node):
                     for obstacle in obstacles
                 ),
                 default=math.inf,
+            )
+            self._log_qp_problem(
+                p_x,
+                p_y,
+                g_x,
+                g_y,
+                u_nom_x,
+                u_nom_y,
+                obstacles,
             )
             return solve_clf_cbf_qp(
                 p_x,
@@ -1053,6 +1120,57 @@ class SafeNavigationServer(Node):
             f"min_h={self._last_min_obstacle_h:.4f}"
         )
 
+    def _log_qp_problem(
+        self,
+        p_x: float,
+        p_y: float,
+        g_x: float,
+        g_y: float,
+        u_nom_x: float,
+        u_nom_y: float,
+        obstacles: List[CircularObstacle],
+    ) -> None:
+        if self.diagnostic_log_period_sec <= 0.0:
+            return
+        now = time.monotonic()
+        if now - self._last_qp_problem_log_time < self.diagnostic_log_period_sec:
+            return
+        self._last_qp_problem_log_time = now
+
+        e_x = p_x - g_x
+        e_y = p_y - g_y
+        clf_v = 0.5 * (e_x**2 + e_y**2)
+        obstacle_lines = []
+        for index, obstacle in enumerate(obstacles):
+            dx = p_x - obstacle.x
+            dy = p_y - obstacle.y
+            cbf_h = dx**2 + dy**2 - obstacle.radius**2
+            obstacle_lines.append(
+                "  "
+                f"cbf[{index}]: "
+                f"obs=({obstacle.x:.3f}, {obstacle.y:.3f}, r={obstacle.radius:.3f}), "
+                f"dx={dx:.3f}, dy={dy:.3f}, h={cbf_h:.4f}, "
+                f"G=({-2.0 * dx:.3f}, {-2.0 * dy:.3f}, 0.000), "
+                f"bound={self.cbf_gamma * cbf_h:.4f}"
+            )
+        if not obstacle_lines:
+            obstacle_lines.append("  cbf: no obstacles")
+
+        self.get_logger().info(
+            "CLF-CBF-QP problem:\n"
+            f"  point=({p_x:.3f}, {p_y:.3f}), "
+            f"goal=({g_x:.3f}, {g_y:.3f}), "
+            f"u_nom=({u_nom_x:.3f}, {u_nom_y:.3f})\n"
+            f"  clf: V={clf_v:.4f}, "
+            f"G=({e_x:.3f}, {e_y:.3f}, -1.000), "
+            f"bound={-self.clf_gamma * clf_v:.4f}\n"
+            f"  bounds: ux,uy in [-{self.max_point_speed:.3f}, "
+            f"{self.max_point_speed:.3f}], delta >= 0\n"
+            f"  obstacle_counts: static={self._last_static_obstacle_count}, "
+            f"pose={self._last_pose_obstacle_count}\n"
+            + "\n".join(obstacle_lines)
+        )
+
     def _log_qp_diagnostics(
         self,
         result: QpResult,
@@ -1081,6 +1199,84 @@ class SafeNavigationServer(Node):
             f"u_nom=({u_nom_x:.3f}, {u_nom_y:.3f}), "
             f"u_safe=({result.u_x:.3f}, {result.u_y:.3f})"
         )
+
+    def _write_clf_cbf_log(
+        self,
+        result: QpResult,
+        p_x: float,
+        p_y: float,
+        g_x: float,
+        g_y: float,
+        u_nom_x: float,
+        u_nom_y: float,
+    ) -> None:
+        if not self.clf_cbf_log_enabled:
+            return
+        log_dir = os.path.dirname(self.clf_cbf_log_path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+
+        write_header = not self._clf_cbf_log_started
+        if write_header and os.path.exists(self.clf_cbf_log_path):
+            write_header = os.path.getsize(self.clf_cbf_log_path) == 0
+
+        clf_value = result.clf.v if result.clf is not None else math.nan
+        clf_residual = result.clf.residual if result.clf is not None else math.nan
+        cbf_h_values = [cbf.h for cbf in result.cbfs]
+        cbf_residual_values = [cbf.residual for cbf in result.cbfs]
+        min_h = min(cbf_h_values, default=math.inf)
+        min_cbf_residual = min(cbf_residual_values, default=math.inf)
+
+        with open(self.clf_cbf_log_path, "a", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            if write_header:
+                writer.writerow(
+                    [
+                        "time_sec",
+                        "status",
+                        "p_x",
+                        "p_y",
+                        "g_x",
+                        "g_y",
+                        "u_nom_x",
+                        "u_nom_y",
+                        "u_safe_x",
+                        "u_safe_y",
+                        "delta",
+                        "clf_v",
+                        "clf_residual",
+                        "min_h",
+                        "min_cbf_residual",
+                        "static_obstacles",
+                        "pose_obstacles",
+                        "all_h",
+                        "all_cbf_residuals",
+                    ]
+                )
+            writer.writerow(
+                [
+                    f"{time.monotonic():.6f}",
+                    result.status,
+                    f"{p_x:.6f}",
+                    f"{p_y:.6f}",
+                    f"{g_x:.6f}",
+                    f"{g_y:.6f}",
+                    f"{u_nom_x:.6f}",
+                    f"{u_nom_y:.6f}",
+                    f"{result.u_x:.6f}",
+                    f"{result.u_y:.6f}",
+                    f"{result.delta:.6f}",
+                    f"{clf_value:.6f}",
+                    f"{clf_residual:.6f}",
+                    f"{min_h:.6f}",
+                    f"{min_cbf_residual:.6f}",
+                    self._last_static_obstacle_count,
+                    self._last_pose_obstacle_count,
+                    ";".join(f"{value:.6f}" for value in cbf_h_values),
+                    ";".join(f"{value:.6f}" for value in cbf_residual_values),
+                ]
+            )
+        self._clf_cbf_log_started = True
 
     def _record_loop_timing(self) -> None:
         self._loop_count += 1
